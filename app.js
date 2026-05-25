@@ -8,13 +8,14 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = input.value.trim();
   if (!q) return;
+
   result.innerHTML = `<p class="muted">搜尋中...</p>`;
 
   try {
     const data = await searchKmb(q);
     renderResult(data);
   } catch (err) {
-    console.error('SEARCH ERROR:', err);
+    console.error(err);
     result.innerHTML = `<div class="row"><strong>⚠️ 無實時數據</strong><span class="small">${escapeHtml(err.message || 'Unknown error')}</span></div>`;
   }
 });
@@ -28,78 +29,46 @@ function parseQuery(q) {
 }
 
 async function searchKmb(q) {
-  const debug = {};
   const { route, stopText } = parseQuery(q);
-  debug.query = { route, stopText };
   if (!route) throw new Error('No route');
 
   const directionCandidates = ['outbound', 'inbound', 1, 2];
-  const routeStopsResult = await tryRouteStops(route, directionCandidates, debug);
-
+  const routeStopsResult = await tryRouteStops(route, directionCandidates);
   if (!routeStopsResult) throw new Error('No valid direction');
 
   const { stopList, chosenDirection } = routeStopsResult;
-  debug.chosenDirection = chosenDirection;
-  debug.stopListCount = stopList.length;
-  debug.stopListSample = stopList.slice(0, 3);
 
   let chosen = null;
   if (stopText) chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
   if (!chosen) chosen = stopList[0];
-  debug.chosen = chosen;
 
   const stopId = chosen.stop || chosen.stop_id || chosen.id || '';
   const stopName = chosen.name_tc || chosen.name_en || stopText || stopId;
-  debug.stopId = stopId;
-  debug.stopName = stopName;
-
   if (!stopId) throw new Error('No stop id');
 
-  const stopEtaUrl = `${API_BASE}/kmb/stop-eta/${encodeURIComponent(stopId)}`;
-  debug.stopEtaUrl = stopEtaUrl;
-
-  const stopEtaRes = await fetchJson(stopEtaUrl);
-  debug.stopEtaRes = stopEtaRes;
-
-  const stopEtaData = Array.isArray(stopEtaRes?.data) ? stopEtaRes.data : (Array.isArray(stopEtaRes) ? stopEtaRes : []);
-  debug.stopEtaCount = stopEtaData.length;
-  debug.stopEtaSample = stopEtaData.slice(0, 8);
-
-  if (!stopEtaData.length) throw new Error('No stop ETA data');
+  const etaData = await fetchEtaByStop(route, stopId);
+  if (!etaData.length) throw new Error('No ETA');
 
   const routeUpper = String(route).toUpperCase();
-
-  const matched = stopEtaData.filter(x => {
-    const r = String(x?.route || '').toUpperCase();
-    return r === routeUpper && !!x?.eta;
-  });
-  debug.matchedCount = matched.length;
-  debug.matchedSample = matched.slice(0, 5);
+  const matched = etaData.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
 
   const etas = matched.slice(0, 3).map((x, idx) => ({
     label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
-    route: x.route,
-    bound: x.bound || '',
-    service_type: x.service_type || x.serviceType || '',
     time: formatTime(x.eta),
-    rawEta: x.eta,
     status: etaStatus(x)
   }));
-  debug.etas = etas;
 
   if (!etas.length) throw new Error('No ETA');
 
   const sameStopRoutes = [];
   const seen = new Set();
 
-  for (const x of stopEtaData) {
+  for (const x of etaData) {
     const r = String(x?.route || '').toUpperCase();
     if (!r || r === routeUpper || seen.has(r)) continue;
     seen.add(r);
     sameStopRoutes.push({
       route: x.route,
-      bound: x.bound || '',
-      service_type: x.service_type || x.serviceType || '',
       t1: x.eta ? formatTime(x.eta) : '-',
       t2: x.eta2 ? formatTime(x.eta2) : '-',
       t3: x.eta3 ? formatTime(x.eta3) : '-',
@@ -107,32 +76,26 @@ async function searchKmb(q) {
     });
     if (sameStopRoutes.length >= 3) break;
   }
-  debug.sameStopRoutes = sameStopRoutes;
 
-  return { route, stopName, etas, sameStopRoutes, debug };
+  return { route, stopName, etas, sameStopRoutes, chosenDirection };
 }
 
-async function tryRouteStops(route, candidates, debug) {
+async function tryRouteStops(route, candidates) {
   for (const direction of candidates) {
     const routeStopUrl = `${API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
-    debug[`routeStopUrl_${direction}`] = routeStopUrl;
-
     try {
       const res = await fetchJson(routeStopUrl);
-      debug[`routeStopsRes_${direction}`] = res;
-
       const list = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
-      debug[`stopListCount_${direction}`] = list.length;
-      debug[`stopListSample_${direction}`] = list.slice(0, 3);
-
-      if (list.length) {
-        return { stopList: list, chosenDirection: direction };
-      }
-    } catch (err) {
-      debug[`routeStopError_${direction}`] = err.message;
-    }
+      if (list.length) return { stopList: list, chosenDirection: direction };
+    } catch (_) {}
   }
   return null;
+}
+
+async function fetchEtaByStop(route, stopId) {
+  const stopEtaUrl = `${API_BASE}/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
+  const res = await fetchJson(stopEtaUrl);
+  return Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
 }
 
 function matchesStopText(stop, text) {
@@ -142,8 +105,7 @@ function matchesStopText(stop, text) {
 
 function etaStatus(x) {
   const delay = Number(x?.delay || 0);
-  if (delay > 5) return `延誤 ${delay} 分鐘`;
-  return '正常';
+  return delay > 5 ? `延誤 ${delay} 分鐘` : '正常';
 }
 
 function formatTime(iso) {
@@ -164,43 +126,12 @@ async function fetchJson(url) {
 }
 
 function renderResult(data) {
-  const dbg = data.debug || {};
   result.innerHTML = `
-    <div class="row"><strong>${escapeHtml(data.route)}｜${escapeHtml(data.stopName)}</strong><span class="small">即時結果</span></div>
+    <div class="row"><strong>${escapeHtml(data.route)}｜${escapeHtml(data.stopName)}</strong><span class="small">${escapeHtml(String(data.chosenDirection))}</span></div>
 
-    <div style="height:10px"></div>
-    <div class="row"><strong>Debug summary</strong><span class="small">核心定位</span></div>
-    <div class="row" style="font-size:13px"><span>chosenDirection</span><span>${escapeHtml(String(dbg.chosenDirection ?? '-'))}</span></div>
-    <div class="row" style="font-size:13px"><span>routeStops</span><span>${escapeHtml(String(dbg.stopListCount ?? 0))}</span></div>
-    <div class="row" style="font-size:13px"><span>stopEta</span><span>${escapeHtml(String(dbg.stopEtaCount ?? 0))}</span></div>
-    <div class="row" style="font-size:13px"><span>matched ETA</span><span>${escapeHtml(String(dbg.matchedCount ?? 0))}</span></div>
-    <div class="row" style="font-size:13px"><span>stopId</span><span>${escapeHtml(dbg.stopId || '-')}</span></div>
-
-    <div style="height:10px"></div>
-    <div class="row"><strong>輸入解析</strong><span class="small">parseQuery</span></div>
-    <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;margin:0">${escapeHtml(JSON.stringify(dbg.query || {}, null, 2))}</pre>
-
-    <div style="height:10px"></div>
-    <div class="row"><strong>route-stop sample</strong><span class="small">前 3 筆</span></div>
-    <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;margin:0">${escapeHtml(JSON.stringify(dbg.stopListSample || [], null, 2))}</pre>
-
-    <div style="height:10px"></div>
-    <div class="row"><strong>chosen stop</strong><span class="small">實際揀中</span></div>
-    <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;margin:0">${escapeHtml(JSON.stringify(dbg.chosen || {}, null, 2))}</pre>
-
-    <div style="height:10px"></div>
-    <div class="row"><strong>stop-eta sample</strong><span class="small">前 8 筆</span></div>
-    <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;margin:0">${escapeHtml(JSON.stringify(dbg.stopEtaSample || [], null, 2))}</pre>
-
-    <div style="height:10px"></div>
-    <div class="row"><strong>matched ETA</strong><span class="small">前 5 筆</span></div>
-    <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;margin:0">${escapeHtml(JSON.stringify(dbg.matchedSample || [], null, 2))}</pre>
-
-    <div style="height:12px"></div>
-    <div class="row"><strong>正式結果</strong><span class="small">ETA</span></div>
     ${data.etas.map(item => `
       <div class="row">
-        <span>${escapeHtml(item.label)}${item.bound ? `｜${escapeHtml(item.bound)}` : ''}</span>
+        <span>${escapeHtml(item.label)}</span>
         <span>${escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${escapeHtml(item.status)})</span></span>
       </div>
     `).join('')}
