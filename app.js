@@ -43,28 +43,37 @@ async function searchKmb(q) {
   const stopName = chosen.name_tc || chosen.name_en || stopText || stopId;
   if (!stopId) throw new Error('No stop id');
 
-  const etaRes = await fetchJson(`${API_BASE}/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`);
-  const etaData = Array.isArray(etaRes.data) ? etaRes.data : (Array.isArray(etaRes) ? etaRes : []);
-  const etas = etaData.filter(x => x && x.eta).slice(0, 3).map((x, idx) => ({
-    label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
-    time: formatTime(x.eta),
-    status: etaStatus(x)
-  }));
+  const stopEtaRes = await fetchJson(`${API_BASE}/kmb/stop-eta/${encodeURIComponent(stopId)}`);
+  const stopEtaData = stopEtaRes.data || stopEtaRes || [];
+  const routeUpper = String(route).toUpperCase();
+
+  const etas = stopEtaData
+    .filter(x => String(x.route || '').toUpperCase() === routeUpper && x.eta)
+    .slice(0, 3)
+    .map((x, idx) => ({
+      label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
+      time: formatTime(x.eta),
+      status: etaStatus(x)
+    }));
 
   if (!etas.length) throw new Error('No ETA');
 
-  const stopEtaRes = await fetchJson(`${API_BASE}/kmb/stop-eta/${encodeURIComponent(stopId)}`);
-  const stopEtaData = Array.isArray(stopEtaRes.data) ? stopEtaRes.data : (Array.isArray(stopEtaRes) ? stopEtaRes : []);
-  const sameStopRoutes = stopEtaData
-    .filter(x => String(x.route || '').toUpperCase() !== route)
-    .slice(0, 3)
-    .map(x => ({
+  const sameStopRoutes = [];
+  const seen = new Set();
+
+  for (const x of stopEtaData) {
+    const r = String(x.route || '').toUpperCase();
+    if (!r || r === routeUpper || seen.has(r)) continue;
+    seen.add(r);
+    sameStopRoutes.push({
       route: x.route,
       t1: x.eta ? formatTime(x.eta) : '-',
       t2: x.eta2 ? formatTime(x.eta2) : '-',
       t3: x.eta3 ? formatTime(x.eta3) : '-',
       status: etaStatus(x)
-    }));
+    });
+    if (sameStopRoutes.length >= 3) break;
+  }
 
   return { route, stopName, etas, sameStopRoutes };
 }
