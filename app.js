@@ -65,18 +65,16 @@ const app = {
       this.state.allFound = [];
 
       const pack = await this.resolveRouteStop(parsed.route, parsed.stopText);
-      if (!pack) throw new Error('No valid direction');
+      if (!pack) throw new Error('無法找到相符方向或站點');
 
       this.applyRouteStopPack(pack);
       await this.refreshEta();
-
       this.pushHistory({
         route: this.state.route,
         stopName: this.state.stopName,
         direction: this.state.chosenDirection,
         ts: new Date().toISOString()
       });
-
       this.startAutoRefresh();
     } catch (err) {
       this.renderError(err);
@@ -89,7 +87,7 @@ const app = {
       this.renderLoading();
 
       const pack = await this.resolveRouteStop(this.state.route, this.state.stopText, direction);
-      if (!pack) throw new Error('No valid direction');
+      if (!pack) throw new Error('無法切換方向');
 
       this.applyRouteStopPack(pack);
       await this.refreshEta();
@@ -134,9 +132,7 @@ const app = {
 
   startAutoRefresh() {
     this.stopAutoRefresh();
-    this.state.refreshTimer = setInterval(() => {
-      this.refreshEta();
-    }, this.config.refreshMs);
+    this.state.refreshTimer = setInterval(() => this.refreshEta(), this.config.refreshMs);
   },
 
   stopAutoRefresh() {
@@ -182,8 +178,8 @@ const app = {
     }
 
     if (!found.length) return null;
-    const preferred = found.find(x => this.matchesStopText(x.chosenStop, stopText)) || found[0];
 
+    const preferred = found.find(x => this.matchesStopText(x.chosenStop, stopText)) || found[0];
     return {
       ...preferred,
       availableDirections: found.map(x => x.chosenDirection),
@@ -244,7 +240,13 @@ const app = {
   },
 
   matchesStopText(stop, text) {
-    const hay = `${stop?.name_tc || ''} ${stop?.name_en || ''} ${stop?.stop || ''} ${stop?.dest_tc || ''} ${stop?.dest_en || ''}`.toUpperCase();
+    const hay = [
+      stop?.name_tc || '',
+      stop?.name_en || '',
+      stop?.dest_tc || '',
+      stop?.dest_en || '',
+      stop?.stop || ''
+    ].join(' ').toUpperCase();
     return hay.includes(String(text || '').toUpperCase());
   },
 
@@ -256,7 +258,11 @@ const app = {
   formatTime(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return String(iso || '-');
-    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return d.toLocaleTimeString('zh-HK', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
   },
 
   async fetchJson(url) {
@@ -285,11 +291,14 @@ const app = {
       stop.dest_en ||
       stop.destination_tc ||
       stop.destination_en ||
-      stop.name_tc ||
-      stop.name_en ||
       s.stopName ||
       ''
     );
+  },
+
+  getStationLabel(s) {
+    const stop = s.chosenStop || {};
+    return stop.name_tc || stop.name_en || s.stopName || s.stopText || '';
   },
 
   getDirectionLabel(direction) {
@@ -301,6 +310,7 @@ const app = {
   renderDirectionButtons() {
     const dirs = (this.state.availableDirections || []).slice(0, 2);
     if (!dirs.length) return '';
+
     return `
       <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
         ${dirs.map(d => `
@@ -319,10 +329,16 @@ const app = {
   renderResult() {
     const s = this.state;
     const destination = this.getDestinationLabel(s);
+    const station = this.getStationLabel(s);
 
     this.dom.result.innerHTML = `
       <div class="row">
         <strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(destination)}</strong>
+      </div>
+
+      <div class="row" style="margin-top:6px;">
+        <span class="small">站點</span>
+        <span class="small">${this.escapeHtml(station)}</span>
       </div>
 
       ${this.renderDirectionButtons()}
@@ -404,7 +420,11 @@ const app = {
 
   formatClock(iso) {
     const d = new Date(iso);
-    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return d.toLocaleTimeString('zh-HK', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
   },
 
   escapeHtml(str) {
