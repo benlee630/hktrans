@@ -14,7 +14,7 @@ form.addEventListener('submit', async (e) => {
     const data = await searchKmb(q);
     renderResult(data);
   } catch (err) {
-    console.error(err);
+    console.error('searchKmb error:', err);
     result.innerHTML = `<p>⚠️ 無實時數據</p>`;
   }
 });
@@ -22,33 +22,67 @@ form.addEventListener('submit', async (e) => {
 function parseQuery(q) {
   const s = q.trim().toUpperCase();
   const parts = s.split(/s+/);
-  const route = parts[0];
+  const route = parts[0] || '';
   const stopText = parts.slice(1).join(' ').trim();
   return { route, stopText };
 }
 
 async function searchKmb(q) {
   const { route, stopText } = parseQuery(q);
+  console.log('parseQuery =>', { route, stopText });
+
   if (!route) throw new Error('No route');
 
-  const routeStops = await fetchJson(`${API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/1/1`);
-  const stopList = routeStops.data || routeStops || [];
-  if (!stopList.length) throw new Error('No stop list');
+  const routeStopUrl = `${API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/1/1`;
+  console.log('fetch route-stop =>', routeStopUrl);
+
+  const routeStopsRes = await fetchJson(routeStopUrl);
+  console.log('routeStopsRes =>', routeStopsRes);
+
+  const stopList = routeStopsRes.data || routeStopsRes || [];
+  console.log('stopList =>', stopList);
+
+  if (!Array.isArray(stopList) || !stopList.length) {
+    throw new Error('No stop list');
+  }
 
   let chosen = null;
-  if (stopText) chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
+  if (stopText) {
+    chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
+  }
   if (!chosen) chosen = stopList[0];
 
-  const stopId = chosen.stop || chosen.stop_id || chosen.id;
+  console.log('chosen stop =>', chosen);
+
+  const stopId = chosen.stop || chosen.stop_id || chosen.id || '';
   const stopName = chosen.name_tc || chosen.name_en || stopText || stopId;
+
+  console.log('stopId =>', stopId);
+  console.log('stopName =>', stopName);
+
   if (!stopId) throw new Error('No stop id');
 
-  const stopEtaRes = await fetchJson(`${API_BASE}/kmb/stop-eta/${encodeURIComponent(stopId)}`);
+  const stopEtaUrl = `${API_BASE}/kmb/stop-eta/${encodeURIComponent(stopId)}`;
+  console.log('fetch stop-eta =>', stopEtaUrl);
+
+  const stopEtaRes = await fetchJson(stopEtaUrl);
+  console.log('stopEtaRes =>', stopEtaRes);
+
   const stopEtaData = stopEtaRes.data || stopEtaRes || [];
+  console.log('stopEtaData =>', stopEtaData);
+
+  if (!Array.isArray(stopEtaData) || !stopEtaData.length) {
+    throw new Error('No stop ETA data');
+  }
+
   const routeUpper = String(route).toUpperCase();
 
   const etas = stopEtaData
-    .filter(x => String(x.route || '').toUpperCase() === routeUpper && x.eta)
+    .filter(x => {
+      const ok = x && String(x.route || '').toUpperCase() === routeUpper && x.eta;
+      if (ok) console.log('matched ETA item =>', x);
+      return ok;
+    })
     .slice(0, 3)
     .map((x, idx) => ({
       label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
@@ -56,7 +90,11 @@ async function searchKmb(q) {
       status: etaStatus(x)
     }));
 
-  if (!etas.length) throw new Error('No ETA');
+  console.log('etas =>', etas);
+
+  if (!etas.length) {
+    throw new Error('No ETA');
+  }
 
   const sameStopRoutes = [];
   const seen = new Set();
@@ -65,6 +103,7 @@ async function searchKmb(q) {
     const r = String(x.route || '').toUpperCase();
     if (!r || r === routeUpper || seen.has(r)) continue;
     seen.add(r);
+
     sameStopRoutes.push({
       route: x.route,
       t1: x.eta ? formatTime(x.eta) : '-',
@@ -72,8 +111,11 @@ async function searchKmb(q) {
       t3: x.eta3 ? formatTime(x.eta3) : '-',
       status: etaStatus(x)
     });
+
     if (sameStopRoutes.length >= 3) break;
   }
+
+  console.log('sameStopRoutes =>', sameStopRoutes);
 
   return { route, stopName, etas, sameStopRoutes };
 }
@@ -91,12 +133,23 @@ function etaStatus(x) {
 
 function formatTime(iso) {
   const d = new Date(iso);
-  return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toLocaleTimeString('zh-HK', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
 }
 
 async function fetchJson(url) {
   const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  console.log('fetch response =>', url, res.status);
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    console.log('error body =>', text);
+    throw new Error(`HTTP ${res.status}`);
+  }
+
   return await res.json();
 }
 
