@@ -2,7 +2,7 @@ const form = document.getElementById('searchForm');
 const input = document.getElementById('queryInput');
 const result = document.getElementById('result');
 
-const KMB_API = 'https://data.etabus.gov.hk/v1/transport/kmb';
+const API_BASE = 'https://hktrans.benlee630.workers.dev';
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -31,20 +31,21 @@ async function searchKmb(q) {
   const { route, stopText } = parseQuery(q);
   if (!route) throw new Error('No route');
 
-  const routeStops = await fetchJson(`${KMB_API}/route-stop/${encodeURIComponent(route)}/1/1`);
-  const stopList = routeStops.data || [];
+  const routeStops = await fetchJson(`${API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/1/1`);
+  const stopList = routeStops.data || routeStops || [];
   if (!stopList.length) throw new Error('No stop list');
 
   let chosen = null;
   if (stopText) chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
   if (!chosen) chosen = stopList[0];
 
-  const stopId = chosen.stop;
+  const stopId = chosen.stop || chosen.stop_id || chosen.id;
   const stopName = chosen.name_tc || chosen.name_en || stopText || stopId;
+  if (!stopId) throw new Error('No stop id');
 
-  const etaRes = await fetchJson(`${KMB_API}/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`);
-  const etaData = Array.isArray(etaRes.data) ? etaRes.data : [];
-  const etas = etaData.filter(x => x.eta).slice(0, 3).map((x, idx) => ({
+  const etaRes = await fetchJson(`${API_BASE}/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`);
+  const etaData = Array.isArray(etaRes.data) ? etaRes.data : (Array.isArray(etaRes) ? etaRes : []);
+  const etas = etaData.filter(x => x && x.eta).slice(0, 3).map((x, idx) => ({
     label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
     time: formatTime(x.eta),
     status: etaStatus(x)
@@ -52,10 +53,10 @@ async function searchKmb(q) {
 
   if (!etas.length) throw new Error('No ETA');
 
-  const stopEtaRes = await fetchJson(`${KMB_API}/stop-eta/${encodeURIComponent(stopId)}`);
-  const stopEtaData = Array.isArray(stopEtaRes.data) ? stopEtaRes.data : [];
+  const stopEtaRes = await fetchJson(`${API_BASE}/kmb/stop-eta/${encodeURIComponent(stopId)}`);
+  const stopEtaData = Array.isArray(stopEtaRes.data) ? stopEtaRes.data : (Array.isArray(stopEtaRes) ? stopEtaRes : []);
   const sameStopRoutes = stopEtaData
-    .filter(x => String(x.route).toUpperCase() !== route)
+    .filter(x => String(x.route || '').toUpperCase() !== route)
     .slice(0, 3)
     .map(x => ({
       route: x.route,
