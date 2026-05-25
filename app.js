@@ -15,12 +15,14 @@ const app = {
     lastUpdated: null,
     isRefreshing: false,
     refreshTimer: null,
-    lastResolvedQuery: null
+    lastResolvedQuery: null,
+    availableDirections: [],
+    selectedDirection: null
   },
 
   config: {
     API_BASE: 'https://hktrans.benlee630.workers.dev',
-    directionCandidates: ['outbound', 'inbound', 1, 2],
+    directionCandidates: ['outbound', 'inbound', 2, 1],
     refreshMs: 60000,
     maxHistory: 8,
     maxFavorites: 8
@@ -58,29 +60,50 @@ const app = {
       const parsed = this.parseQuery(q);
       this.state.route = parsed.route;
       this.state.stopText = parsed.stopText;
+      this.state.selectedDirection = null;
 
       const routeStopPack = await this.resolveRouteStop(parsed.route, parsed.stopText);
       if (!routeStopPack) throw new Error('No valid direction');
 
-      this.state.chosenDirection = routeStopPack.chosenDirection;
-      this.state.stopList = routeStopPack.stopList;
-      this.state.chosenStop = routeStopPack.chosenStop;
-      this.state.stopId = routeStopPack.stopId;
-      this.state.stopName = routeStopPack.stopName;
-
-      this.state.lastResolvedQuery = {
-        route: parsed.route,
-        stopId: routeStopPack.stopId,
-        chosenDirection: routeStopPack.chosenDirection,
-        stopName: routeStopPack.stopName
-      };
-
+      this.applyRouteStopPack(routeStopPack);
       await this.refreshEta(true);
       this.pushHistory({
         route: this.state.route,
         stopName: this.state.stopName,
+        direction: this.state.chosenDirection,
         ts: new Date().toISOString()
       });
+      this.startAutoRefresh();
+    } catch (err) {
+      this.renderError(err);
+    }
+  },
+
+  applyRouteStopPack(routeStopPack) {
+    this.state.chosenDirection = routeStopPack.chosenDirection;
+    this.state.availableDirections = routeStopPack.availableDirections || [];
+    this.state.stopList = routeStopPack.stopList || [];
+    this.state.chosenStop = routeStopPack.chosenStop;
+    this.state.stopId = routeStopPack.stopId;
+    this.state.stopName = routeStopPack.stopName;
+    this.state.lastResolvedQuery = {
+      route: this.state.route,
+      stopId: routeStopPack.stopId,
+      chosenDirection: routeStopPack.chosenDirection,
+      stopName: routeStopPack.stopName
+    };
+  },
+
+  async handleDirectionChange(direction) {
+    try {
+      this.stopAutoRefresh();
+      this.renderLoading();
+
+      const pack = await this.resolveRouteStop(this.state.route, this.state.stopText, direction);
+      if (!pack) throw new Error('No valid direction');
+      this.state.selectedDirection = direction;
+      this.applyRouteStopPack(pack);
+      await this.refreshEta(true);
       this.startAutoRefresh();
     } catch (err) {
       this.renderError(err);
@@ -100,8 +123,7 @@ const app = {
       this.state.sameStopRoutes = etaPack.sameStopRoutes;
       this.state.lastUpdated = new Date().toISOString();
 
-      if (forceRender) this.renderResult();
-      else this.renderResult();
+      this.renderResult();
     } finally {
       this.state.isRefreshing = false;
     }
@@ -120,7 +142,7 @@ const app = {
   },
 
   parseQuery(q) {
-    const s = q.trim().toUpperCase();
+    const s = q.trim();
     const parts = s.split(/s+/);
     return {
       route: parts[0] || '',
@@ -128,8 +150,14 @@ const app = {
     };
   },
 
-  async resolveRouteStop(route, stopText) {
-    for (const direction of this.config.directionCandidates) {
+  async resolveRouteStop(route, stopText, forcedDirection = null) {
+    const directions = forcedDirection != null
+      ? [forcedDirection]
+      : this.config.directionCandidates;
+
+    const found = [];
+
+    for (const direction of directions) {
       const url = `${this.config.API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
       try {
         const json = await this.fetchJson(url);
@@ -143,16 +171,25 @@ const app = {
         const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
         if (!stopId) continue;
 
-        return {
+        found.push({
           chosenDirection: direction,
           stopList,
           chosenStop,
           stopId,
           stopName: chosenStop.name_tc || chosenStop.name_en || stopText || stopId
-        };
+        });
       } catch (_) {}
     }
-    return null;
+
+    if (!found.length) return null;
+    if (found.length === 1) return { ...found[0], availableDirections: found.map(x => x.chosenDirection) };
+
+    const preferred = found.find(x => this.matchesStopText(x.chosenStop, stopText)) || found[0];
+    return {
+      ...preferred,
+      availableDirections: found.map(x => x.chosenDirection),
+      allFound: found
+    };
   },
 
   async fetchEta(stopId, route) {
@@ -196,7 +233,7 @@ const app = {
 
   matchesStopText(stop, text) {
     const hay = `${stop.name_tc || ''} ${stop.name_en || ''} ${stop.stop || ''}`.toUpperCase();
-    return hay.includes(text.toUpperCase());
+    return hay.includes(String(text || '').toUpperCase());
   },
 
   etaStatus(x) {
@@ -222,21 +259,61 @@ const app = {
   },
 
   renderIdle() {
-    this.dom.result.innerHTML = `
-      <div class="row"><strong>香港實時到站</strong><span class="small">準備搜尋</span></div>
-    `;
+    this.dom.result.innerHTML = `<p class="muted">輸入路線及站名開始搜尋</p>`;
   },
 
   renderLoading() {
     this.dom.result.innerHTML = `<p class="muted">搜尋中...</p>`;
   },
 
+  getDestinationLabel(s) {
+    const stop = s.chosenStop || {};
+    return (
+      stop.dest_tc ||
+      stop.dest_en ||
+      stop.destination_tc ||
+      stop.destination_en ||
+      stop.name_tc ||
+      stop.name_en ||
+      s.stopName ||
+      ''
+    );
+  },
+
+  getDirectionLabel(direction) {
+    if (direction === 'outbound' || String(direction) === '2') return '出方向';
+    if (direction === 'inbound' || String(direction) === '1') return '入方向';
+    return String(direction || '');
+  },
+
+  renderDirectionButtons() {
+    const dirs = (this.state.availableDirections || []).slice(0, 2);
+    if (!dirs.length) return '';
+    return `
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        ${dirs.map(d => `
+          <button
+            type="button"
+            class="dir-btn ${String(d) === String(this.state.chosenDirection) ? 'active' : ''}"
+            data-direction="${this.escapeHtml(String(d))}"
+          >
+            ${this.escapeHtml(this.getDirectionLabel(d))}
+          </button>
+        `).join('')}
+      </div>
+    `;
+  },
+
   renderResult() {
     const s = this.state;
+    const destination = this.getDestinationLabel(s);
+
     this.dom.result.innerHTML = `
       <div class="row">
-        <strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(s.stopName)}</strong>
+        <strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(destination)}</strong>
       </div>
+
+      ${this.renderDirectionButtons()}
 
       <div style="height:10px"></div>
 
@@ -266,6 +343,19 @@ const app = {
         `).join('')}
       ` : ''}
     `;
+
+    this.bindDirectionButtons();
+  },
+
+  bindDirectionButtons() {
+    const buttons = this.dom.result.querySelectorAll('.dir-btn');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const direction = btn.dataset.direction;
+        if (!direction || String(direction) === String(this.state.chosenDirection)) return;
+        await this.handleDirectionChange(direction);
+      });
+    });
   },
 
   renderError(err) {
