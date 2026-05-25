@@ -12,12 +12,16 @@ const app = {
     sameStopRoutes: [],
     favorites: [],
     history: [],
-    lastUpdated: null
+    lastUpdated: null,
+    isRefreshing: false,
+    refreshTimer: null,
+    lastResolvedQuery: null
   },
 
   config: {
     API_BASE: 'https://hktrans.benlee630.workers.dev',
     directionCandidates: ['outbound', 'inbound', 1, 2],
+    refreshMs: 60000,
     maxHistory: 8,
     maxFavorites: 8
   },
@@ -48,7 +52,9 @@ const app = {
 
   async handleSearch(q) {
     try {
+      this.stopAutoRefresh();
       this.renderLoading();
+
       const parsed = this.parseQuery(q);
       this.state.route = parsed.route;
       this.state.stopText = parsed.stopText;
@@ -62,23 +68,55 @@ const app = {
       this.state.stopId = routeStopPack.stopId;
       this.state.stopName = routeStopPack.stopName;
 
-      const etaPack = await this.fetchEta(routeStopPack.stopId, parsed.route);
+      this.state.lastResolvedQuery = {
+        route: parsed.route,
+        stopId: routeStopPack.stopId,
+        chosenDirection: routeStopPack.chosenDirection,
+        stopName: routeStopPack.stopName
+      };
+
+      await this.refreshEta(true);
+      this.pushHistory({
+        route: this.state.route,
+        stopName: this.state.stopName,
+        ts: new Date().toISOString()
+      });
+      this.startAutoRefresh();
+    } catch (err) {
+      this.renderError(err);
+    }
+  },
+
+  async refreshEta(forceRender = false) {
+    if (!this.state.lastResolvedQuery || this.state.isRefreshing) return;
+    this.state.isRefreshing = true;
+
+    try {
+      const { route, stopId } = this.state.lastResolvedQuery;
+      const etaPack = await this.fetchEta(stopId, route);
+
       this.state.etaData = etaPack.raw;
       this.state.etas = etaPack.etas;
       this.state.sameStopRoutes = etaPack.sameStopRoutes;
       this.state.lastUpdated = new Date().toISOString();
 
-      this.pushHistory({
-        route: this.state.route,
-        stopName: this.state.stopName,
-        direction: this.state.chosenDirection,
-        ts: this.state.lastUpdated
-      });
-
-      this.renderResult();
-    } catch (err) {
-      this.renderError(err);
+      if (forceRender) this.renderResult();
+      else this.renderResult();
+    } finally {
+      this.state.isRefreshing = false;
     }
+  },
+
+  startAutoRefresh() {
+    this.stopAutoRefresh();
+    this.state.refreshTimer = setInterval(() => {
+      this.refreshEta();
+    }, this.config.refreshMs);
+  },
+
+  stopAutoRefresh() {
+    if (this.state.refreshTimer) clearInterval(this.state.refreshTimer);
+    this.state.refreshTimer = null;
   },
 
   parseQuery(q) {
@@ -169,11 +207,7 @@ const app = {
   formatTime(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return String(iso || '-');
-    return d.toLocaleTimeString('zh-HK', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
   },
 
   async fetchJson(url) {
@@ -202,7 +236,6 @@ const app = {
     this.dom.result.innerHTML = `
       <div class="row">
         <strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(s.stopName)}</strong>
-        <span class="small">${this.escapeHtml(String(s.chosenDirection))}</span>
       </div>
 
       <div style="height:10px"></div>
