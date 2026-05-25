@@ -8,7 +8,6 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = input.value.trim();
   if (!q) return;
-
   result.innerHTML = `<p class="muted">搜尋中...</p>`;
 
   try {
@@ -37,37 +36,34 @@ async function searchKmb(q) {
   if (!stopList.length) throw new Error('No stop list');
 
   let chosen = null;
-  if (stopText) {
-    chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
-  }
+  if (stopText) chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
   if (!chosen) chosen = stopList[0];
 
   const stopId = chosen.stop;
   const stopName = chosen.name_tc || chosen.name_en || stopText || stopId;
 
   const etaRes = await fetchJson(`${KMB_API}/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`);
-  const etas = (etaRes.data || [])
-    .filter(x => x.eta)
-    .slice(0, 3)
-    .map((x, idx) => ({
-      label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
-      time: formatTime(x.eta),
-      status: etaStatus(x)
-    }));
+  const etaData = Array.isArray(etaRes.data) ? etaRes.data : [];
+  const etas = etaData.filter(x => x.eta).slice(0, 3).map((x, idx) => ({
+    label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
+    time: formatTime(x.eta),
+    status: etaStatus(x)
+  }));
 
   if (!etas.length) throw new Error('No ETA');
 
   const stopEtaRes = await fetchJson(`${KMB_API}/stop-eta/${encodeURIComponent(stopId)}`);
-  const sameStopRoutes = (stopEtaRes.data || [])
+  const stopEtaData = Array.isArray(stopEtaRes.data) ? stopEtaRes.data : [];
+  const sameStopRoutes = stopEtaData
+    .filter(x => String(x.route).toUpperCase() !== route)
+    .slice(0, 3)
     .map(x => ({
       route: x.route,
       t1: x.eta ? formatTime(x.eta) : '-',
       t2: x.eta2 ? formatTime(x.eta2) : '-',
       t3: x.eta3 ? formatTime(x.eta3) : '-',
       status: etaStatus(x)
-    }))
-    .filter(x => String(x.route).toUpperCase() !== route)
-    .slice(0, 3);
+    }));
 
   return { route, stopName, etas, sameStopRoutes };
 }
