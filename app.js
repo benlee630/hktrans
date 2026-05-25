@@ -9,14 +9,13 @@ form.addEventListener('submit', async (e) => {
   const q = input.value.trim();
   if (!q) return;
   result.innerHTML = `<p class="muted">搜尋中...</p>`;
+
   try {
     const data = await searchKmb(q);
     renderResult(data);
   } catch (err) {
     console.error('SEARCH ERROR:', err);
-    result.innerHTML = `
-      <div class="row"><strong>⚠️ 無實時數據</strong><span class="small">${escapeHtml(err.message || 'Unknown error')}</span></div>
-    `;
+    result.innerHTML = `<div class="row"><strong>⚠️ 無實時數據</strong><span class="small">${escapeHtml(err.message || 'Unknown error')}</span></div>`;
   }
 });
 
@@ -34,20 +33,40 @@ async function searchKmb(q) {
   debug.query = { route, stopText };
   if (!route) throw new Error('No route');
 
-  const routeStopUrl = `${API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/1/1`;
-  debug.routeStopUrl = routeStopUrl;
-  const routeStopsRes = await fetchJson(routeStopUrl);
-  debug.routeStopsRes = routeStopsRes;
+  const directionsTried = [1, 2];
+  let routeStopsRes = null;
+  let chosenDirection = null;
 
-  const stopList = Array.isArray(routeStopsRes?.data) ? routeStopsRes.data : (Array.isArray(routeStopsRes) ? routeStopsRes : []);
-  debug.stopListCount = stopList.length;
-  debug.stopListSample = stopList.slice(0, 3);
+  for (const direction of directionsTried) {
+    const routeStopUrl = `${API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${direction}/1`;
+    debug[`routeStopUrl_${direction}`] = routeStopUrl;
 
-  if (!stopList.length) throw new Error('No stop list');
+    try {
+      const res = await fetchJson(routeStopUrl);
+      const list = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+      debug[`routeStopsRes_${direction}`] = res;
+      debug[`stopListCount_${direction}`] = list.length;
+      debug[`stopListSample_${direction}`] = list.slice(0, 3);
 
+      if (list.length) {
+        routeStopsRes = { data: list };
+        chosenDirection = direction;
+        debug.chosenDirection = direction;
+        debug.stopList = list;
+        break;
+      }
+    } catch (err) {
+      debug[`routeStopError_${direction}`] = err.message;
+    }
+  }
+
+  if (!routeStopsRes) throw new Error('No valid direction');
+
+  const stopList = routeStopsRes.data || [];
   let chosen = null;
   if (stopText) chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
   if (!chosen) chosen = stopList[0];
+
   debug.chosen = chosen;
 
   const stopId = chosen.stop || chosen.stop_id || chosen.id || '';
@@ -59,6 +78,7 @@ async function searchKmb(q) {
 
   const stopEtaUrl = `${API_BASE}/kmb/stop-eta/${encodeURIComponent(stopId)}`;
   debug.stopEtaUrl = stopEtaUrl;
+
   const stopEtaRes = await fetchJson(stopEtaUrl);
   debug.stopEtaRes = stopEtaRes;
 
@@ -72,8 +92,7 @@ async function searchKmb(q) {
 
   const matched = stopEtaData.filter(x => {
     const r = String(x?.route || '').toUpperCase();
-    const ok = r === routeUpper && !!x?.eta;
-    return ok;
+    return r === routeUpper && !!x?.eta;
   });
   debug.matchedCount = matched.length;
   debug.matchedSample = matched.slice(0, 5);
@@ -111,7 +130,7 @@ async function searchKmb(q) {
   }
   debug.sameStopRoutes = sameStopRoutes;
 
-  return { route, stopName, etas, sameStopRoutes, debug };
+  return { route, stopName, etas, sameStopRoutes, debug, chosenDirection };
 }
 
 function matchesStopText(stop, text) {
@@ -146,12 +165,13 @@ function renderResult(data) {
   const dbg = data.debug || {};
   result.innerHTML = `
     <div class="row"><strong>${escapeHtml(data.route)}｜${escapeHtml(data.stopName)}</strong><span class="small">即時結果</span></div>
-
     <div style="height:10px"></div>
+
     <div class="row"><strong>Debug summary</strong><span class="small">核心定位</span></div>
-    <div class="row" style="font-size:13px"><span>routeStops</span><span>${dbg.stopListCount ?? 0}</span></div>
-    <div class="row" style="font-size:13px"><span>stopEta</span><span>${dbg.stopEtaCount ?? 0}</span></div>
-    <div class="row" style="font-size:13px"><span>matched ETA</span><span>${dbg.matchedCount ?? 0}</span></div>
+    <div class="row" style="font-size:13px"><span>chosenDirection</span><span>${escapeHtml(String(data.chosenDirection ?? '-'))}</span></div>
+    <div class="row" style="font-size:13px"><span>routeStops</span><span>${escapeHtml(String(dbg.stopList?.length ?? dbg.stopListCount_1 ?? dbg.stopListCount_2 ?? 0))}</span></div>
+    <div class="row" style="font-size:13px"><span>stopEta</span><span>${escapeHtml(String(dbg.stopEtaCount ?? 0))}</span></div>
+    <div class="row" style="font-size:13px"><span>matched ETA</span><span>${escapeHtml(String(dbg.matchedCount ?? 0))}</span></div>
     <div class="row" style="font-size:13px"><span>stopId</span><span>${escapeHtml(dbg.stopId || '-')}</span></div>
 
     <div style="height:10px"></div>
@@ -160,7 +180,7 @@ function renderResult(data) {
 
     <div style="height:10px"></div>
     <div class="row"><strong>route-stop sample</strong><span class="small">前 3 筆</span></div>
-    <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;margin:0">${escapeHtml(JSON.stringify(dbg.stopListSample || [], null, 2))}</pre>
+    <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;margin:0">${escapeHtml(JSON.stringify(dbg.stopList?.slice(0, 3) || dbg.stopListSample_1 || dbg.stopListSample_2 || [], null, 2))}</pre>
 
     <div style="height:10px"></div>
     <div class="row"><strong>chosen stop</strong><span class="small">實際揀中</span></div>
