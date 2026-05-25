@@ -16,7 +16,8 @@ const app = {
     isRefreshing: false,
     refreshTimer: null,
     lastResolvedQuery: null,
-    availableDirections: []
+    availableDirections: [],
+    allFound: []
   },
 
   config: {
@@ -59,18 +60,23 @@ const app = {
       const parsed = this.parseQuery(q);
       this.state.route = parsed.route;
       this.state.stopText = parsed.stopText;
+      this.state.chosenDirection = null;
+      this.state.availableDirections = [];
+      this.state.allFound = [];
 
       const pack = await this.resolveRouteStop(parsed.route, parsed.stopText);
       if (!pack) throw new Error('No valid direction');
 
       this.applyRouteStopPack(pack);
       await this.refreshEta();
+
       this.pushHistory({
         route: this.state.route,
         stopName: this.state.stopName,
         direction: this.state.chosenDirection,
         ts: new Date().toISOString()
       });
+
       this.startAutoRefresh();
     } catch (err) {
       this.renderError(err);
@@ -96,6 +102,7 @@ const app = {
   applyRouteStopPack(pack) {
     this.state.chosenDirection = pack.chosenDirection;
     this.state.availableDirections = pack.availableDirections || [];
+    this.state.allFound = pack.allFound || [];
     this.state.stopList = pack.stopList || [];
     this.state.chosenStop = pack.chosenStop;
     this.state.stopId = pack.stopId;
@@ -115,12 +122,10 @@ const app = {
     try {
       const { route, stopId } = this.state.lastResolvedQuery;
       const etaPack = await this.fetchEta(stopId, route);
-
       this.state.etaData = etaPack.raw;
       this.state.etas = etaPack.etas;
       this.state.sameStopRoutes = etaPack.sameStopRoutes;
       this.state.lastUpdated = new Date().toISOString();
-
       this.renderResult();
     } finally {
       this.state.isRefreshing = false;
@@ -129,7 +134,9 @@ const app = {
 
   startAutoRefresh() {
     this.stopAutoRefresh();
-    this.state.refreshTimer = setInterval(() => this.refreshEta(), this.config.refreshMs);
+    this.state.refreshTimer = setInterval(() => {
+      this.refreshEta();
+    }, this.config.refreshMs);
   },
 
   stopAutoRefresh() {
@@ -169,23 +176,32 @@ const app = {
           stopList,
           chosenStop,
           stopId,
-          stopName: chosenStop.name_tc || chosenStop.name_en || stopText || stopId
+          stopName: this.getStopLabel(chosenStop, stopText)
         });
       } catch (_) {}
     }
 
     if (!found.length) return null;
-    if (found.length === 1) return {
-      ...found[0],
-      availableDirections: found.map(x => x.chosenDirection)
-    };
-
     const preferred = found.find(x => this.matchesStopText(x.chosenStop, stopText)) || found[0];
+
     return {
       ...preferred,
       availableDirections: found.map(x => x.chosenDirection),
       allFound: found
     };
+  },
+
+  getStopLabel(stop, fallback) {
+    return (
+      stop?.dest_tc ||
+      stop?.dest_en ||
+      stop?.destination_tc ||
+      stop?.destination_en ||
+      stop?.name_tc ||
+      stop?.name_en ||
+      fallback ||
+      ''
+    );
   },
 
   async fetchEta(stopId, route) {
@@ -228,7 +244,7 @@ const app = {
   },
 
   matchesStopText(stop, text) {
-    const hay = `${stop.name_tc || ''} ${stop.name_en || ''} ${stop.stop || ''}`.toUpperCase();
+    const hay = `${stop?.name_tc || ''} ${stop?.name_en || ''} ${stop?.stop || ''} ${stop?.dest_tc || ''} ${stop?.dest_en || ''}`.toUpperCase();
     return hay.includes(String(text || '').toUpperCase());
   },
 
@@ -240,11 +256,7 @@ const app = {
   formatTime(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return String(iso || '-');
-    return d.toLocaleTimeString('zh-HK', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
   },
 
   async fetchJson(url) {
@@ -289,9 +301,8 @@ const app = {
   renderDirectionButtons() {
     const dirs = (this.state.availableDirections || []).slice(0, 2);
     if (!dirs.length) return '';
-
     return `
-      <div style="display:flex; gap:8px; margin-top:10px;">
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
         ${dirs.map(d => `
           <button
             type="button"
@@ -321,12 +332,7 @@ const app = {
       ${s.etas.map(item => `
         <div class="row">
           <span>${this.escapeHtml(item.label)}</span>
-          <span>
-            ${this.escapeHtml(item.time)}
-            <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">
-              (${this.escapeHtml(item.status)})
-            </span>
-          </span>
+          <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
         </div>
       `).join('')}
 
@@ -340,22 +346,20 @@ const app = {
 
       ${s.sameStopRoutes.length ? `
         <div style="height:12px"></div>
-        <div class="row">
-          <strong>同站其他路線</strong>
-          <span class="small">最多 3 條</span>
-        </div>
+        <div class="row"><strong>同站其他路線</strong><span class="small">最多 3 條</span></div>
         ${s.sameStopRoutes.map(item => `
           <div class="row" style="font-size:14px">
             <span>${this.escapeHtml(item.route)}</span>
-            <span>
-              ${this.escapeHtml(item.time)}
-              <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">
-                (${this.escapeHtml(item.status)})
-              </span>
-            </span>
+            <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
           </div>
         `).join('')}
       ` : ''}
+
+      <div style="height:8px"></div>
+      <div class="row">
+        <span class="small">自動刷新</span>
+        <span class="small">${this.config.refreshMs / 1000} 秒</span>
+      </div>
     `;
 
     this.bindDirectionButtons();
@@ -366,7 +370,8 @@ const app = {
     buttons.forEach(btn => {
       btn.addEventListener('click', async () => {
         const direction = btn.dataset.direction;
-        if (!direction || String(direction) === String(this.state.chosenDirection)) return;
+        if (!direction) return;
+        if (String(direction) === String(this.state.chosenDirection)) return;
         await this.handleDirectionChange(direction);
       });
     });
@@ -399,11 +404,7 @@ const app = {
 
   formatClock(iso) {
     const d = new Date(iso);
-    return d.toLocaleTimeString('zh-HK', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
   },
 
   escapeHtml(str) {
