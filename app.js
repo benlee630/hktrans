@@ -1,159 +1,278 @@
-const form = document.getElementById('searchForm');
-const input = document.getElementById('queryInput');
-const result = document.getElementById('result');
+const app = {
+  state: {
+    route: '',
+    stopText: '',
+    chosenDirection: null,
+    stopList: [],
+    chosenStop: null,
+    stopId: '',
+    stopName: '',
+    etaData: [],
+    etas: [],
+    sameStopRoutes: [],
+    favorites: [],
+    history: [],
+    lastUpdated: null
+  },
 
-const API_BASE = 'https://hktrans.benlee630.workers.dev';
+  config: {
+    API_BASE: 'https://hktrans.benlee630.workers.dev',
+    directionCandidates: ['outbound', 'inbound', 1, 2],
+    maxHistory: 8,
+    maxFavorites: 8
+  },
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const q = input.value.trim();
-  if (!q) return;
+  init() {
+    this.cacheDom();
+    this.bindEvents();
+    this.loadPersistedState();
+    this.renderIdle();
+  },
 
-  result.innerHTML = `<p class="muted">搜尋中...</p>`;
+  cacheDom() {
+    this.dom = {
+      form: document.getElementById('searchForm'),
+      input: document.getElementById('queryInput'),
+      result: document.getElementById('result')
+    };
+  },
 
-  try {
-    const data = await searchKmb(q);
-    renderResult(data);
-  } catch (err) {
-    console.error(err);
-    result.innerHTML = `<div class="row"><strong>⚠️ 無實時數據</strong><span class="small">${escapeHtml(err.message || 'Unknown error')}</span></div>`;
-  }
-});
-
-function parseQuery(q) {
-  const s = q.trim().toUpperCase();
-  const parts = s.split(/s+/);
-  const route = parts[0] || '';
-  const stopText = parts.slice(1).join(' ').trim();
-  return { route, stopText };
-}
-
-async function searchKmb(q) {
-  const { route, stopText } = parseQuery(q);
-  if (!route) throw new Error('No route');
-
-  const directionCandidates = ['outbound', 'inbound', 1, 2];
-  const routeStopsResult = await tryRouteStops(route, directionCandidates);
-  if (!routeStopsResult) throw new Error('No valid direction');
-
-  const { stopList, chosenDirection } = routeStopsResult;
-
-  let chosen = null;
-  if (stopText) chosen = stopList.find(s => matchesStopText(s, stopText)) || null;
-  if (!chosen) chosen = stopList[0];
-
-  const stopId = chosen.stop || chosen.stop_id || chosen.id || '';
-  const stopName = chosen.name_tc || chosen.name_en || stopText || stopId;
-  if (!stopId) throw new Error('No stop id');
-
-  const etaData = await fetchEtaByStop(route, stopId);
-  if (!etaData.length) throw new Error('No ETA');
-
-  const routeUpper = String(route).toUpperCase();
-  const matched = etaData.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
-
-  const etas = matched.slice(0, 3).map((x, idx) => ({
-    label: idx === 0 ? '下一班' : idx === 1 ? '下 2 班' : '下 3 班',
-    time: formatTime(x.eta),
-    status: etaStatus(x)
-  }));
-
-  if (!etas.length) throw new Error('No ETA');
-
-  const sameStopRoutes = [];
-  const seen = new Set();
-
-  for (const x of etaData) {
-    const r = String(x?.route || '').toUpperCase();
-    if (!r || r === routeUpper || seen.has(r)) continue;
-    seen.add(r);
-    sameStopRoutes.push({
-      route: x.route,
-      t1: x.eta ? formatTime(x.eta) : '-',
-      t2: x.eta2 ? formatTime(x.eta2) : '-',
-      t3: x.eta3 ? formatTime(x.eta3) : '-',
-      status: etaStatus(x)
+  bindEvents() {
+    this.dom.form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const q = this.dom.input.value.trim();
+      if (!q) return;
+      await this.handleSearch(q);
     });
-    if (sameStopRoutes.length >= 3) break;
-  }
+  },
 
-  return { route, stopName, etas, sameStopRoutes, chosenDirection };
-}
-
-async function tryRouteStops(route, candidates) {
-  for (const direction of candidates) {
-    const routeStopUrl = `${API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
+  async handleSearch(q) {
     try {
-      const res = await fetchJson(routeStopUrl);
-      const list = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
-      if (list.length) return { stopList: list, chosenDirection: direction };
-    } catch (_) {}
-  }
-  return null;
-}
+      this.renderLoading();
+      const parsed = this.parseQuery(q);
+      this.state.route = parsed.route;
+      this.state.stopText = parsed.stopText;
 
-async function fetchEtaByStop(route, stopId) {
-  const stopEtaUrl = `${API_BASE}/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
-  const res = await fetchJson(stopEtaUrl);
-  return Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
-}
+      const routeStopPack = await this.resolveRouteStop(parsed.route, parsed.stopText);
+      if (!routeStopPack) throw new Error('No valid direction');
 
-function matchesStopText(stop, text) {
-  const hay = `${stop.name_tc || ''} ${stop.name_en || ''} ${stop.stop || ''}`.toUpperCase();
-  return hay.includes(text.toUpperCase());
-}
+      this.state.chosenDirection = routeStopPack.chosenDirection;
+      this.state.stopList = routeStopPack.stopList;
+      this.state.chosenStop = routeStopPack.chosenStop;
+      this.state.stopId = routeStopPack.stopId;
+      this.state.stopName = routeStopPack.stopName;
 
-function etaStatus(x) {
-  const delay = Number(x?.delay || 0);
-  return delay > 5 ? `延誤 ${delay} 分鐘` : '正常';
-}
+      const etaPack = await this.fetchEta(routeStopPack.stopId, parsed.route);
+      this.state.etaData = etaPack.raw;
+      this.state.etas = etaPack.etas;
+      this.state.sameStopRoutes = etaPack.sameStopRoutes;
+      this.state.lastUpdated = new Date().toISOString();
 
-function formatTime(iso) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso || '-');
-  return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
-}
+      this.pushHistory({
+        route: this.state.route,
+        stopName: this.state.stopName,
+        direction: this.state.chosenDirection,
+        ts: this.state.lastUpdated
+      });
 
-async function fetchJson(url) {
-  const res = await fetch(url, { cache: 'no-store' });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`Invalid JSON: ${text.slice(0, 200)}`);
-  }
-}
+      this.renderResult();
+    } catch (err) {
+      this.renderError(err);
+    }
+  },
 
-function renderResult(data) {
-  result.innerHTML = `
-    <div class="row"><strong>${escapeHtml(data.route)}｜${escapeHtml(data.stopName)}</strong><span class="small">${escapeHtml(String(data.chosenDirection))}</span></div>
+  parseQuery(q) {
+    const s = q.trim().toUpperCase();
+    const parts = s.split(/s+/);
+    return {
+      route: parts[0] || '',
+      stopText: parts.slice(1).join(' ').trim()
+    };
+  },
 
-    ${data.etas.map(item => `
+  async resolveRouteStop(route, stopText) {
+    for (const direction of this.config.directionCandidates) {
+      const url = `${this.config.API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
+      try {
+        const json = await this.fetchJson(url);
+        const stopList = this.normalizeList(json);
+        if (!stopList.length) continue;
+
+        let chosenStop = null;
+        if (stopText) chosenStop = stopList.find(s => this.matchesStopText(s, stopText)) || null;
+        if (!chosenStop) chosenStop = stopList[0];
+
+        const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
+        if (!stopId) continue;
+
+        return {
+          chosenDirection: direction,
+          stopList,
+          chosenStop,
+          stopId,
+          stopName: chosenStop.name_tc || chosenStop.name_en || stopText || stopId
+        };
+      } catch (_) {}
+    }
+    return null;
+  },
+
+  async fetchEta(stopId, route) {
+    const url = `${this.config.API_BASE}/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
+    const json = await this.fetchJson(url);
+    const raw = this.normalizeList(json);
+
+    const routeUpper = String(route).toUpperCase();
+    const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
+
+    const etas = matched.slice(0, 3).map((x, idx) => ({
+      label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
+      time: this.formatTime(x.eta),
+      status: this.etaStatus(x),
+      rawEta: x.eta
+    }));
+
+    const sameStopRoutes = [];
+    const seen = new Set();
+
+    for (const x of raw) {
+      const r = String(x?.route || '').toUpperCase();
+      if (!r || r === routeUpper || seen.has(r)) continue;
+      seen.add(r);
+      sameStopRoutes.push({
+        route: x.route,
+        time: x.eta ? this.formatTime(x.eta) : '-',
+        status: this.etaStatus(x)
+      });
+      if (sameStopRoutes.length >= 3) break;
+    }
+
+    return { raw, etas, sameStopRoutes };
+  },
+
+  normalizeList(json) {
+    if (Array.isArray(json?.data)) return json.data;
+    if (Array.isArray(json)) return json;
+    return [];
+  },
+
+  matchesStopText(stop, text) {
+    const hay = `${stop.name_tc || ''} ${stop.name_en || ''} ${stop.stop || ''}`.toUpperCase();
+    return hay.includes(text.toUpperCase());
+  },
+
+  etaStatus(x) {
+    const delay = Number(x?.delay || 0);
+    return delay > 5 ? `延誤 ${delay} 分鐘` : '正常';
+  },
+
+  formatTime(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso || '-');
+    return d.toLocaleTimeString('zh-HK', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  },
+
+  async fetchJson(url) {
+    const res = await fetch(url, { cache: 'no-store' });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Invalid JSON: ${text.slice(0, 200)}`);
+    }
+  },
+
+  renderIdle() {
+    this.dom.result.innerHTML = `
+      <div class="row"><strong>香港實時到站</strong><span class="small">準備搜尋</span></div>
+    `;
+  },
+
+  renderLoading() {
+    this.dom.result.innerHTML = `<p class="muted">搜尋中...</p>`;
+  },
+
+  renderResult() {
+    const s = this.state;
+    this.dom.result.innerHTML = `
       <div class="row">
-        <span>${escapeHtml(item.label)}</span>
-        <span>${escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${escapeHtml(item.status)})</span></span>
+        <strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(s.stopName)}</strong>
+        <span class="small">${this.escapeHtml(String(s.chosenDirection))}</span>
       </div>
-    `).join('')}
 
-    ${data.sameStopRoutes.length ? `
-      <div style="height:12px"></div>
-      <div class="row"><strong>同站其他路線</strong><span class="small">最多 3 條</span></div>
-      ${data.sameStopRoutes.map(item => `
-        <div class="row" style="font-size:14px">
-          <span>${escapeHtml(item.route)}</span>
-          <span>${escapeHtml(item.t1)}｜${escapeHtml(item.t2)}｜${escapeHtml(item.t3)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${escapeHtml(item.status)})</span></span>
+      <div style="height:10px"></div>
+
+      ${s.etas.map(item => `
+        <div class="row">
+          <span>${this.escapeHtml(item.label)}</span>
+          <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
         </div>
       `).join('')}
-    ` : ''}
-  `;
-}
 
-function escapeHtml(str) {
-  return String(str)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
+      ${s.lastUpdated ? `
+        <div style="height:8px"></div>
+        <div class="row">
+          <span class="small">更新時間</span>
+          <span class="small">${this.escapeHtml(this.formatClock(s.lastUpdated))}</span>
+        </div>
+      ` : ''}
+
+      ${s.sameStopRoutes.length ? `
+        <div style="height:12px"></div>
+        <div class="row"><strong>同站其他路線</strong><span class="small">最多 3 條</span></div>
+        ${s.sameStopRoutes.map(item => `
+          <div class="row" style="font-size:14px">
+            <span>${this.escapeHtml(item.route)}</span>
+            <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
+          </div>
+        `).join('')}
+      ` : ''}
+    `;
+  },
+
+  renderError(err) {
+    this.dom.result.innerHTML = `
+      <div class="row">
+        <strong>⚠️ 無實時數據</strong>
+        <span class="small">${this.escapeHtml(err.message || 'Unknown error')}</span>
+      </div>
+    `;
+  },
+
+  pushHistory(item) {
+    this.state.history.unshift(item);
+    this.state.history = this.state.history.slice(0, this.config.maxHistory);
+    localStorage.setItem('hkbus_history', JSON.stringify(this.state.history));
+  },
+
+  loadPersistedState() {
+    try {
+      this.state.history = JSON.parse(localStorage.getItem('hkbus_history') || '[]');
+      this.state.favorites = JSON.parse(localStorage.getItem('hkbus_favorites') || '[]');
+    } catch {
+      this.state.history = [];
+      this.state.favorites = [];
+    }
+  },
+
+  formatClock(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+  },
+
+  escapeHtml(str) {
+    return String(str)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+};
+
+document.addEventListener('DOMContentLoaded', () => app.init());
