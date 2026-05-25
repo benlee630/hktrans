@@ -16,8 +16,7 @@ const app = {
     isRefreshing: false,
     refreshTimer: null,
     lastResolvedQuery: null,
-    availableDirections: [],
-    selectedDirection: null
+    availableDirections: []
   },
 
   config: {
@@ -60,13 +59,12 @@ const app = {
       const parsed = this.parseQuery(q);
       this.state.route = parsed.route;
       this.state.stopText = parsed.stopText;
-      this.state.selectedDirection = null;
 
-      const routeStopPack = await this.resolveRouteStop(parsed.route, parsed.stopText);
-      if (!routeStopPack) throw new Error('No valid direction');
+      const pack = await this.resolveRouteStop(parsed.route, parsed.stopText);
+      if (!pack) throw new Error('No valid direction');
 
-      this.applyRouteStopPack(routeStopPack);
-      await this.refreshEta(true);
+      this.applyRouteStopPack(pack);
+      await this.refreshEta();
       this.pushHistory({
         route: this.state.route,
         stopName: this.state.stopName,
@@ -79,21 +77,6 @@ const app = {
     }
   },
 
-  applyRouteStopPack(routeStopPack) {
-    this.state.chosenDirection = routeStopPack.chosenDirection;
-    this.state.availableDirections = routeStopPack.availableDirections || [];
-    this.state.stopList = routeStopPack.stopList || [];
-    this.state.chosenStop = routeStopPack.chosenStop;
-    this.state.stopId = routeStopPack.stopId;
-    this.state.stopName = routeStopPack.stopName;
-    this.state.lastResolvedQuery = {
-      route: this.state.route,
-      stopId: routeStopPack.stopId,
-      chosenDirection: routeStopPack.chosenDirection,
-      stopName: routeStopPack.stopName
-    };
-  },
-
   async handleDirectionChange(direction) {
     try {
       this.stopAutoRefresh();
@@ -101,16 +84,31 @@ const app = {
 
       const pack = await this.resolveRouteStop(this.state.route, this.state.stopText, direction);
       if (!pack) throw new Error('No valid direction');
-      this.state.selectedDirection = direction;
+
       this.applyRouteStopPack(pack);
-      await this.refreshEta(true);
+      await this.refreshEta();
       this.startAutoRefresh();
     } catch (err) {
       this.renderError(err);
     }
   },
 
-  async refreshEta(forceRender = false) {
+  applyRouteStopPack(pack) {
+    this.state.chosenDirection = pack.chosenDirection;
+    this.state.availableDirections = pack.availableDirections || [];
+    this.state.stopList = pack.stopList || [];
+    this.state.chosenStop = pack.chosenStop;
+    this.state.stopId = pack.stopId;
+    this.state.stopName = pack.stopName;
+    this.state.lastResolvedQuery = {
+      route: this.state.route,
+      stopId: pack.stopId,
+      chosenDirection: pack.chosenDirection,
+      stopName: pack.stopName
+    };
+  },
+
+  async refreshEta() {
     if (!this.state.lastResolvedQuery || this.state.isRefreshing) return;
     this.state.isRefreshing = true;
 
@@ -131,9 +129,7 @@ const app = {
 
   startAutoRefresh() {
     this.stopAutoRefresh();
-    this.state.refreshTimer = setInterval(() => {
-      this.refreshEta();
-    }, this.config.refreshMs);
+    this.state.refreshTimer = setInterval(() => this.refreshEta(), this.config.refreshMs);
   },
 
   stopAutoRefresh() {
@@ -151,10 +147,7 @@ const app = {
   },
 
   async resolveRouteStop(route, stopText, forcedDirection = null) {
-    const directions = forcedDirection != null
-      ? [forcedDirection]
-      : this.config.directionCandidates;
-
+    const directions = forcedDirection != null ? [forcedDirection] : this.config.directionCandidates;
     const found = [];
 
     for (const direction of directions) {
@@ -182,7 +175,10 @@ const app = {
     }
 
     if (!found.length) return null;
-    if (found.length === 1) return { ...found[0], availableDirections: found.map(x => x.chosenDirection) };
+    if (found.length === 1) return {
+      ...found[0],
+      availableDirections: found.map(x => x.chosenDirection)
+    };
 
     const preferred = found.find(x => this.matchesStopText(x.chosenStop, stopText)) || found[0];
     return {
@@ -244,7 +240,11 @@ const app = {
   formatTime(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return String(iso || '-');
-    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return d.toLocaleTimeString('zh-HK', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
   },
 
   async fetchJson(url) {
@@ -289,6 +289,7 @@ const app = {
   renderDirectionButtons() {
     const dirs = (this.state.availableDirections || []).slice(0, 2);
     if (!dirs.length) return '';
+
     return `
       <div style="display:flex; gap:8px; margin-top:10px;">
         ${dirs.map(d => `
@@ -320,7 +321,12 @@ const app = {
       ${s.etas.map(item => `
         <div class="row">
           <span>${this.escapeHtml(item.label)}</span>
-          <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
+          <span>
+            ${this.escapeHtml(item.time)}
+            <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">
+              (${this.escapeHtml(item.status)})
+            </span>
+          </span>
         </div>
       `).join('')}
 
@@ -334,11 +340,19 @@ const app = {
 
       ${s.sameStopRoutes.length ? `
         <div style="height:12px"></div>
-        <div class="row"><strong>同站其他路線</strong><span class="small">最多 3 條</span></div>
+        <div class="row">
+          <strong>同站其他路線</strong>
+          <span class="small">最多 3 條</span>
+        </div>
         ${s.sameStopRoutes.map(item => `
           <div class="row" style="font-size:14px">
             <span>${this.escapeHtml(item.route)}</span>
-            <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
+            <span>
+              ${this.escapeHtml(item.time)}
+              <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">
+                (${this.escapeHtml(item.status)})
+              </span>
+            </span>
           </div>
         `).join('')}
       ` : ''}
@@ -385,7 +399,11 @@ const app = {
 
   formatClock(iso) {
     const d = new Date(iso);
-    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return d.toLocaleTimeString('zh-HK', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
   },
 
   escapeHtml(str) {
