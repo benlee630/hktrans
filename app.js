@@ -87,7 +87,7 @@ const providers = {
 
           const enrichedStopList = await Promise.all(stopList.map(async (s) => {
             const sid = s.stop || s.stop_id || s.id || '';
-            if (!sid || s.name_tc) return s;
+            if (!sid || s.name_tc || s.name_en) return s;
             return { ...s, name_tc: s.name_tc || s.name || '', name_en: s.name_en || '' };
           }));
 
@@ -98,7 +98,7 @@ const providers = {
           const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
           if (!stopId) continue;
 
-          const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
+          const stopName = chosenStop.name_tc || chosenStop.name_en || chosenStop.name || stopId;
           const destName = this.resolveDestName(direction, routeMeta);
 
           found.push({ chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName });
@@ -117,12 +117,14 @@ const providers = {
       const raw = app.normalizeList(json);
       const routeUpper = String(route).toUpperCase();
       const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
+
       const etas = matched.slice(0, 3).map((x, idx) => ({
         label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
         time: app.formatTime(x.eta),
         status: app.etaStatus(x),
         rawEta: x.eta
       }));
+
       const sameStopRoutes = [];
       const seen = new Set();
       for (const x of raw) {
@@ -132,6 +134,7 @@ const providers = {
         sameStopRoutes.push({ route: x.route, time: x.eta ? app.formatTime(x.eta) : '-', status: app.etaStatus(x) });
         if (sameStopRoutes.length >= 3) break;
       }
+
       return { raw, etas, sameStopRoutes };
     }
   },
@@ -200,12 +203,10 @@ const app = {
       e.preventDefault();
       const q = this.dom.input.value.trim();
       if (!q) return;
-
       if (!this.state.transportSelected) {
         this.renderMessage('請先揀交通工具');
         return;
       }
-
       await this.handleSearch(q);
     });
   },
@@ -215,12 +216,7 @@ const app = {
   },
 
   renderShell() {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">請先揀交通工具，再輸入路線同站名</span>
-      </div>
-    `;
+    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">請先揀交通工具，再輸入路線同站名</span></div>`;
     this.bindTransportButtons();
   },
 
@@ -237,7 +233,6 @@ const app = {
 
       const provider = this.getProvider();
       if (!provider) throw new Error('請先揀交通工具');
-      if (!provider.fetchRouteMeta) throw new Error('暫未支援此交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(parsed.route, this);
       const found = await provider.resolveAllDirections(parsed.route, parsed.stopText, routeMeta, this);
@@ -266,7 +261,7 @@ const app = {
       this.renderLoading();
 
       const provider = this.getProvider();
-      if (!provider || !provider.fetchRouteMeta) throw new Error('暫未支援此交通工具');
+      if (!provider) throw new Error('請先揀交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(this.state.route, this);
       const found = await provider.resolveAllDirections(this.state.route, this.state.stopText, routeMeta, this);
@@ -334,7 +329,6 @@ const app = {
     try {
       const p = provider || this.getProvider();
       const { route, stopId } = this.state.lastResolvedQuery;
-
       if (!p || !p.fetchEta) throw new Error('暫未支援此交通工具');
 
       const etaPack = await p.fetchEta(route, stopId, this);
@@ -361,10 +355,7 @@ const app = {
   parseQuery(q) {
     const s = q.trim();
     const parts = s.split(/\s+/);
-    return {
-      route: parts[0] || '',
-      stopText: parts.slice(1).join(' ').trim()
-    };
+    return { route: parts[0] || '', stopText: parts.slice(1).join(' ').trim() };
   },
 
   normalizeList(json) {
@@ -418,11 +409,7 @@ const app = {
     const res = await fetch(url, { cache: 'no-store' });
     const text = await res.text();
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error(`Invalid JSON: ${text.slice(0, 200)}`);
-    }
+    try { return JSON.parse(text); } catch { throw new Error(`Invalid JSON: ${text.slice(0, 200)}`); }
   },
 
   renderTransportPicker() {
@@ -441,22 +428,12 @@ const app = {
   },
 
   renderIdle() {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">${this.renderShellMessage()}</span>
-      </div>
-    `;
+    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">${this.renderShellMessage()}</span></div>`;
     this.bindTransportButtons();
   },
 
   renderLoading() {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">搜尋中...</span>
-      </div>
-    `;
+    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">搜尋中...</span></div>`;
     this.bindTransportButtons();
   },
 
@@ -583,23 +560,12 @@ const app = {
   },
 
   renderMessage(msg) {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">${this.escapeHtml(msg)}</span>
-      </div>
-    `;
+    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">${this.escapeHtml(msg)}</span></div>`;
     this.bindTransportButtons();
   },
 
   renderError(err) {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <strong>⚠️ 無實時數據</strong>
-        <span class="small">${this.escapeHtml(err.message || 'Unknown error')}</span>
-      </div>
-    `;
+    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><strong>⚠️ 無實時數據</strong><span class="small">${this.escapeHtml(err.message || 'Unknown error')}</span></div>`;
     this.bindTransportButtons();
   },
 
