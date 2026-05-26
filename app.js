@@ -16,7 +16,6 @@ const providers = {
 
     async resolveAllDirections(route, stopText, routeMeta, app) {
       const found = [];
-
       for (const direction of ['outbound', 'inbound']) {
         const url = `https://data.etabus.gov.hk/v1/transport/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
         try {
@@ -25,11 +24,8 @@ const providers = {
           if (!stopList.length) continue;
 
           const enrichedStopList = await app.enrichAllStopNames(stopList);
-
           let chosenStop = null;
-          if (stopText) {
-            chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
-          }
+          if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
           if (!chosenStop) chosenStop = enrichedStopList[0];
           if (!chosenStop) continue;
 
@@ -50,7 +46,6 @@ const providers = {
           });
         } catch (_) {}
       }
-
       return found;
     },
 
@@ -103,7 +98,6 @@ const providers = {
         `https://rt.data.gov.hk/v2/transport/citybus/route/ctb/${encodeURIComponent(routeNo)}`,
         `https://rt.data.gov.hk/v2/transport/citybus/route/ctb/${encodeURIComponent(routeNo)}/1`
       ];
-
       for (const url of urls) {
         try {
           const json = await app.fetchJson(url);
@@ -149,7 +143,7 @@ const providers = {
         }
 
         if (!stopList.length) {
-          app.debug.citybus.push({ stage: 'route-stop-empty', route: routeNo, direction: d.key, tried });
+          if (app.config.debug) app.debug.citybus.push({ stage: 'route-stop-empty', route: routeNo, direction: d.key, tried });
           continue;
         }
 
@@ -171,7 +165,8 @@ const providers = {
         const stopTextNorm = String(stopText || '').trim().toUpperCase();
         if (stopTextNorm) {
           chosenStop = enrichedStopList.find(s => {
-            const hay = [s.name_tc, s.name_en, s.__rawStopId, s.__seq, s.stop, s.stop_id, s.id].filter(Boolean).join(' ').toUpperCase();
+            const hay = [s.name_tc, s.name_en, s.__rawStopId, s.__seq, s.stop, s.stop_id, s.id]
+              .filter(Boolean).join(' ').toUpperCase();
             return hay.includes(stopTextNorm);
           }) || null;
         }
@@ -181,17 +176,13 @@ const providers = {
         const stopId = chosenStop?.__rawStopId || chosenStop?.stop || chosenStop?.stop_id || chosenStop?.id || chosenStop?.stopId || '';
         const stopName = chosenStop?.name_tc || chosenStop?.name_en || chosenStop?.__seq || stopId;
         if (!stopId) {
-          app.debug.citybus.push({ stage: 'no-stopid', route: routeNo, direction: d.key, usedUrl, sampleKeys: enrichedStopList.slice(0, 3).map(x => Object.keys(x).slice(0, 20)) });
+          if (app.config.debug) app.debug.citybus.push({ stage: 'no-stopid', route: routeNo, direction: d.key, usedUrl });
           continue;
         }
 
         const destName = this.resolveDestName(d.key, routeData);
         found.push({ chosenDirection: d.key, stopList, enrichedStopList, chosenStop, stopId, stopName, destName, usedUrl });
-        app.debug.citybus.push({ stage: 'route-stop-ok', route: routeNo, direction: d.key, usedUrl, stopId, stopName, count: stopList.length });
-      }
-
-      if (!found.length) {
-        app.debug.citybus.push({ stage: 'route-search-failed', route: routeNo, note: 'no direction matched after all route-stop attempts' });
+        if (app.config.debug) app.debug.citybus.push({ stage: 'route-stop-ok', route: routeNo, direction: d.key, usedUrl, stopId, stopName, count: stopList.length });
       }
 
       return found;
@@ -226,7 +217,7 @@ const providers = {
         } catch (_) {}
       }
 
-      app.debug.citybus.push({ stage: 'eta-fetch', route: routeNo, stopId, usedUrl, count: raw.length });
+      if (app.config.debug) app.debug.citybus.push({ stage: 'eta-fetch', route: routeNo, stopId, usedUrl, count: raw.length });
 
       const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeNo && x?.eta);
       const etas = matched.slice(0, 3).map((x, idx) => ({
@@ -242,7 +233,11 @@ const providers = {
         const r = String(x?.route || '').toUpperCase();
         if (!r || r === routeNo || seen.has(r)) continue;
         seen.add(r);
-        sameStopRoutes.push({ route: x.route, time: x.eta ? app.formatTime(x.eta) : '-', status: app.etaStatus(x) });
+        sameStopRoutes.push({
+          route: x.route,
+          time: x.eta ? app.formatTime(x.eta) : '-',
+          status: app.etaStatus(x)
+        });
         if (sameStopRoutes.length >= 3) break;
       }
 
@@ -262,8 +257,8 @@ const providers = {
 
 const app = {
   state: {
-    transportType: 'bus',
-    providerKey: 'kmb',
+    transportType: '',
+    providerKey: '',
     route: '',
     stopText: '',
     chosenDirection: null,
@@ -284,7 +279,7 @@ const app = {
     refreshTimer: null,
     lastResolvedQuery: null,
     availableDirections: [],
-    transportSelected: true
+    transportSelected: false
   },
 
   config: {
@@ -292,7 +287,7 @@ const app = {
     refreshMs: 60000,
     maxHistory: 8,
     maxFavorites: 8,
-    debug: true
+    debug: false
   },
 
   debug: { citybus: [] },
@@ -321,12 +316,17 @@ const app = {
     });
   },
 
-  getProvider() { return providers[this.state.providerKey] || null; },
-  getRouteKey(route) { const p = this.getProvider(); return p?.routeKey ? p.routeKey(route) : `${this.state.providerKey}:${String(route || '').toUpperCase()}`; },
+  getProvider() {
+    return providers[this.state.providerKey] || null;
+  },
+
+  getRouteKey(route) {
+    const p = this.getProvider();
+    return p?.routeKey ? p.routeKey(route) : `${this.state.providerKey}:${String(route || '').toUpperCase()}`;
+  },
 
   renderShell() {
-    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">輸入路線開始搜尋</span></div>`;
-    this.bindTransportButtons();
+    this.renderIdle();
   },
 
   async handleSearch(q) {
@@ -342,7 +342,7 @@ const app = {
       this.state.availableDirections = [];
 
       const provider = this.getProvider();
-      if (!provider) throw new Error('暫未支援此交通工具');
+      if (!provider) throw new Error('請先揀交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(parsed.route, this);
       const found = await provider.resolveAllDirections(parsed.route, parsed.stopText, routeMeta, this);
@@ -373,7 +373,7 @@ const app = {
       this.renderLoading();
 
       const provider = this.getProvider();
-      if (!provider) throw new Error('暫未支援此交通工具');
+      if (!provider) throw new Error('請先揀交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(this.state.route, this);
       const found = await provider.resolveAllDirections(this.state.route, this.state.stopText, routeMeta, this);
@@ -440,7 +440,7 @@ const app = {
     try {
       const p = provider || this.getProvider();
       const { route, stopId } = this.state.lastResolvedQuery;
-      if (!p || !p.fetchEta) throw new Error('暫未支援此交通工具');
+      if (!p || !p.fetchEta) throw new Error('請先揀交通工具');
 
       const etaPack = await p.fetchEta(route, stopId, this);
       this.state.etaData = etaPack.raw || [];
@@ -453,57 +453,149 @@ const app = {
     }
   },
 
-  startAutoRefresh() { this.stopAutoRefresh(); this.state.refreshTimer = setInterval(() => this.refreshEta(), this.config.refreshMs); },
-  stopAutoRefresh() { if (this.state.refreshTimer) clearInterval(this.state.refreshTimer); this.state.refreshTimer = null; },
-  parseQuery(q) { const s = q.trim(); const parts = s.split(/s+/); return { route: parts[0] || '', stopText: parts.slice(1).join(' ').trim() }; },
-  normalizeList(json) { if (Array.isArray(json?.data)) return json.data; if (Array.isArray(json)) return json; return []; },
-  matchesStopText(stop, text) { const hay = [stop?.name_tc || '', stop?.name_en || '', stop?.__rawStopId || '', stop?.__seq || '', stop?.stop || '', stop?.stopId || ''].join(' ').toUpperCase(); return hay.includes(String(text || '').toUpperCase()); },
-  async enrichAllStopNames(stopList) { return Promise.all(stopList.map(async (s) => s)); },
-  etaStatus(x) { const delay = Number(x?.delay || 0); return delay > 5 ? `延誤 ${delay} 分鐘` : '正常'; },
-  formatTime(iso) { const d = new Date(iso); if (Number.isNaN(d.getTime())) return String(iso || '-'); return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false }); },
-  formatClock(iso) { const d = new Date(iso); return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false }); },
-  async fetchJson(url) { const res = await fetch(url, { cache: 'no-store' }); const text = await res.text(); if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 350)}`); return JSON.parse(text); },
-
-  renderTransportPicker() {
-    return `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-      <button type="button" class="transport-btn ${this.state.transportType === 'bus' ? 'active' : ''}" data-transport="bus">巴士</button>
-      <button type="button" class="transport-btn ${this.state.transportType === 'mtr' ? 'active' : ''}" data-transport="mtr">MTR</button>
-      <button type="button" class="transport-btn ${this.state.transportType === 'other' ? 'active' : ''}" data-transport="other">其他</button>
-    </div>`;
+  startAutoRefresh() {
+    this.stopAutoRefresh();
+    this.state.refreshTimer = setInterval(() => this.refreshEta(), this.config.refreshMs);
   },
 
-  renderShellMessage() { return '輸入路線開始搜尋'; },
-  renderIdle() { this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">${this.renderShellMessage()}</span></div>`; this.bindTransportButtons(); },
-  renderLoading() { this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">搜尋中...</span></div>`; this.bindTransportButtons(); },
-  getDirectionLabel(direction) { if (direction === 'outbound' || String(direction) === '2') return '出方向'; if (direction === 'inbound' || String(direction) === '1') return '入方向'; return String(direction || ''); },
+  stopAutoRefresh() {
+    if (this.state.refreshTimer) clearInterval(this.state.refreshTimer);
+    this.state.refreshTimer = null;
+  },
+
+  parseQuery(q) {
+    const s = q.trim();
+    const parts = s.split(/s+/);
+    return {
+      route: parts[0] || '',
+      stopText: parts.slice(1).join(' ').trim()
+    };
+  },
+
+  normalizeList(json) {
+    if (Array.isArray(json?.data)) return json.data;
+    if (Array.isArray(json)) return json;
+    return [];
+  },
+
+  matchesStopText(stop, text) {
+    const hay = [
+      stop?.name_tc || '',
+      stop?.name_en || '',
+      stop?.__rawStopId || '',
+      stop?.__seq || '',
+      stop?.stop || '',
+      stop?.stopId || ''
+    ].join(' ').toUpperCase();
+    return hay.includes(String(text || '').toUpperCase());
+  },
+
+  async enrichAllStopNames(stopList) {
+    return stopList.map(s => ({
+      ...s,
+      name_tc: s.name_tc || s.stop_name_tc || s.name || s.stopname_tc || s.stopNameTc || s.name_chi || '',
+      name_en: s.name_en || s.stop_name_en || s.stopname_en || s.stopNameEn || s.name_eng || ''
+    }));
+  },
+
+  etaStatus(x) {
+    const delay = Number(x?.delay || 0);
+    return delay > 5 ? `延誤 ${delay} 分鐘` : '正常';
+  },
+
+  formatTime(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso || '-');
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+  },
+
+  formatClock(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+  },
+
+  async fetchJson(url) {
+    const res = await fetch(url, { cache: 'no-store' });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 350)}`);
+    return JSON.parse(text);
+  },
+
+  renderTransportPicker() {
+    return `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <button type="button" class="transport-btn ${this.state.transportType === 'bus' ? 'active' : ''}" data-transport="bus">巴士</button>
+        <button type="button" class="transport-btn ${this.state.transportType === 'mtr' ? 'active' : ''}" data-transport="mtr">MTR</button>
+        <button type="button" class="transport-btn ${this.state.transportType === 'other' ? 'active' : ''}" data-transport="other">其他</button>
+      </div>
+    `;
+  },
+
+  renderShellMessage() {
+    return this.state.transportSelected ? '輸入路線開始搜尋' : '請先揀交通工具';
+  },
+
+  renderIdle() {
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">${this.renderShellMessage()}</span>
+      </div>
+    `;
+    this.bindTransportButtons();
+  },
+
+  renderLoading() {
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">搜尋中...</span>
+      </div>
+    `;
+    this.bindTransportButtons();
+  },
+
+  getDirectionLabel(direction) {
+    if (direction === 'outbound' || String(direction) === '2') return '出方向';
+    if (direction === 'inbound' || String(direction) === '1') return '入方向';
+    return String(direction || '');
+  },
 
   renderDirectionButtons() {
     const dirs = (this.state.availableDirections || []).slice(0, 2);
     if (!dirs.length) return '';
-    return `<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-      ${dirs.map(d => `<button type="button" class="dir-btn ${String(d) === String(this.state.chosenDirection) ? 'active' : ''}" data-direction="${this.escapeHtml(String(d))}">${this.escapeHtml(this.getDirectionLabel(d))}</button>`).join('')}
-    </div>`;
+    return `
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        ${dirs.map(d => `
+          <button type="button" class="dir-btn ${String(d) === String(this.state.chosenDirection) ? 'active' : ''}" data-direction="${this.escapeHtml(String(d))}">
+            ${this.escapeHtml(this.getDirectionLabel(d))}
+          </button>
+        `).join('')}
+      </div>
+    `;
   },
 
   renderStopDropdown() {
     const stops = this.state.enrichedStopList || [];
     if (!stops.length) return '';
     const currentId = this.state.stopId || '';
-    return `<div style="margin-top:10px;">
-      <label class="small" style="display:block; margin-bottom:4px;">選擇站點</label>
-      <select id="stopSelect" style="width:100%; padding:8px; border-radius:8px; background:#1e1e1e; color:#fff; border:1px solid #333; font-size:14px;">
-        ${stops.map((s, idx) => {
-          const sid = s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId || '';
-          const label = s.name_tc || s.name_en || sid || s.__seq;
-          return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${idx + 1}. ${this.escapeHtml(label)}</option>`;
-        }).join('')}
-      </select>
-    </div>`;
+    return `
+      <div style="margin-top:10px;">
+        <label class="small" style="display:block; margin-bottom:4px;">選擇站點</label>
+        <select id="stopSelect" style="width:100%; padding:8px; border-radius:8px; background:#1e1e1e; color:#fff; border:1px solid #333; font-size:14px;">
+          ${stops.map((s, idx) => {
+            const sid = s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId || '';
+            const label = s.name_tc || s.name_en || sid || s.__seq;
+            return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${idx + 1}. ${this.escapeHtml(label)}</option>`;
+          }).join('')}
+        </select>
+      </div>
+    `;
   },
 
   renderResult() {
     const s = this.state;
-    const debugBox = this.config.debug ? `<div style="margin-top:10px; padding:10px; border:1px dashed #444; border-radius:8px; font-size:12px; color:#bbb; white-space:pre-wrap;">${this.escapeHtml(JSON.stringify(this.debug.citybus.slice(-8), null, 2))}</div>` : '';
+
     this.dom.result.innerHTML = `
       ${this.renderTransportPicker()}
       <div class="row"><strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(s.destName || s.stopName || '')}</strong></div>
@@ -513,13 +605,36 @@ const app = {
       ${this.renderDirectionButtons()}
       ${this.renderStopDropdown()}
       <div style="height:10px"></div>
-      ${s.etas.length ? s.etas.map(item => `<div class="row"><span>${this.escapeHtml(item.label)}</span><span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span></div>`).join('') : '<div class="row"><span class="muted">暫無班次資料</span></div>'}
-      ${s.lastUpdated ? `<div style="height:8px"></div><div class="row"><span class="small">更新時間</span><span class="small">${this.escapeHtml(this.formatClock(s.lastUpdated))}</span></div>` : ''}
-      ${s.sameStopRoutes.length ? `<div style="height:12px"></div><div class="row"><strong>同站其他路線</strong><span class="small">最多 3 條</span></div>${s.sameStopRoutes.map(item => `<div class="row" style="font-size:14px"><span>${this.escapeHtml(item.route)}</span><span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span></div>`).join('')}` : ''}
+      ${s.etas.length ? s.etas.map(item => `
+        <div class="row">
+          <span>${this.escapeHtml(item.label)}</span>
+          <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
+        </div>
+      `).join('') : '<div class="row"><span class="muted">暫無班次資料</span></div>'}
+      ${s.lastUpdated ? `
+        <div style="height:8px"></div>
+        <div class="row">
+          <span class="small">更新時間</span>
+          <span class="small">${this.escapeHtml(this.formatClock(s.lastUpdated))}</span>
+        </div>
+      ` : ''}
+      ${s.sameStopRoutes.length ? `
+        <div style="height:12px"></div>
+        <div class="row"><strong>同站其他路線</strong><span class="small">最多 3 條</span></div>
+        ${s.sameStopRoutes.map(item => `
+          <div class="row" style="font-size:14px">
+            <span>${this.escapeHtml(item.route)}</span>
+            <span>${this.escapeHtml(item.time)} <span class="${item.status.includes('延誤') ? 'badge-red' : 'badge-green'}">(${this.escapeHtml(item.status)})</span></span>
+          </div>
+        `).join('')}
+      ` : ''}
       <div style="height:8px"></div>
-      <div class="row"><span class="small">自動刷新</span><span class="small">${this.config.refreshMs / 1000} 秒</span></div>
-      ${debugBox}
+      <div class="row">
+        <span class="small">自動刷新</span>
+        <span class="small">${this.config.refreshMs / 1000} 秒</span>
+      </div>
     `;
+
     this.bindTransportButtons();
     this.bindDirectionButtons();
     this.bindStopDropdown();
@@ -530,9 +645,15 @@ const app = {
       btn.addEventListener('click', async () => {
         const type = btn.dataset.transport;
         if (!type) return;
+
         this.state.transportType = type;
-        this.state.providerKey = type === 'bus' ? 'kmb' : type;
+        if (type === 'bus') this.state.providerKey = 'kmb';
+        else if (type === 'mtr') this.state.providerKey = 'mtrBus';
+        else this.state.providerKey = 'ctb';
+
         this.state.transportSelected = true;
+        this.state.chosenDirection = null;
+        this.state.availableDirections = [];
         this.renderIdle();
       });
     });
@@ -559,12 +680,23 @@ const app = {
   },
 
   renderMessage(msg) {
-    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">${this.escapeHtml(msg)}</span></div>`;
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">${this.escapeHtml(msg)}</span>
+      </div>
+    `;
     this.bindTransportButtons();
   },
 
   renderError(err) {
-    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><strong>⚠️ 無實時數據</strong><span class="small">${this.escapeHtml(err.message || 'Unknown error')}</span></div>`;
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <strong>⚠️ 無實時數據</strong>
+        <span class="small">${this.escapeHtml(err.message || 'Unknown error')}</span>
+      </div>
+    `;
     this.bindTransportButtons();
   },
 
