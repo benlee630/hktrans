@@ -1,8 +1,3 @@
-/* Citybus 專用最小修正 patch — 一鍵 copy 版
-   只改 CTB，唔影響 KMB
-   用法：喺 app 初始化後，呼叫 applyCitybusOnlyPatch(app)
-*/
-
 function applyCitybusOnlyPatch(app) {
   const CITYBUS_DEBUG = true;
 
