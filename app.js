@@ -4,6 +4,7 @@ const app = {
     stopText: '',
     chosenDirection: null,
     stopList: [],
+    enrichedStopList: [],
     chosenStop: null,
     stopId: '',
     stopName: '',
@@ -63,20 +64,12 @@ const app = {
       this.state.chosenDirection = null;
       this.state.availableDirections = [];
 
-      // Step 1: 攞路線目的地
       const routeMeta = await this.fetchRouteMeta(parsed.route);
-
-      // Step 2: 兩個方向都試
       const found = await this.resolveAllDirections(parsed.route, parsed.stopText, routeMeta);
       if (!found.length) throw new Error('找不到相符路線或站點');
 
-      // 保存兩邊方向
       this.state.availableDirections = found.map(x => x.chosenDirection);
-
-      // 預設用第一個方向
-      const preferred = found[0];
-      await this.applyAndFetch(preferred, found);
-
+      await this.applyAndFetch(found[0], found);
       this.pushHistory({ route: this.state.route, stopName: this.state.stopName, direction: this.state.chosenDirection, ts: new Date().toISOString() });
       this.startAutoRefresh();
     } catch (err) {
@@ -93,11 +86,36 @@ const app = {
       const found = await this.resolveAllDirections(this.state.route, this.state.stopText, routeMeta);
       if (!found.length) throw new Error('找不到相符路線');
 
-      // 保持兩邊方向唔消失
       this.state.availableDirections = found.map(x => x.chosenDirection);
-
       const target = found.find(x => String(x.chosenDirection) === String(direction)) || found[0];
       await this.applyAndFetch(target, found);
+      this.startAutoRefresh();
+    } catch (err) {
+      this.renderError(err);
+    }
+  },
+
+  async handleStopChange(stopId) {
+    try {
+      this.stopAutoRefresh();
+      this.renderLoading();
+
+      const enriched = this.state.enrichedStopList;
+      const chosenStop = enriched.find(s => (s.stop || s.stop_id || s.id) === stopId);
+      if (!chosenStop) throw new Error('找不到站點');
+
+      const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
+      this.state.chosenStop = chosenStop;
+      this.state.stopId = stopId;
+      this.state.stopName = stopName;
+      this.state.lastResolvedQuery = {
+        route: this.state.route,
+        stopId,
+        chosenDirection: this.state.chosenDirection,
+        stopName
+      };
+
+      await this.refreshEta();
       this.startAutoRefresh();
     } catch (err) {
       this.renderError(err);
@@ -107,6 +125,7 @@ const app = {
   async applyAndFetch(pack, allFound) {
     this.state.chosenDirection = pack.chosenDirection;
     this.state.stopList = pack.stopList || [];
+    this.state.enrichedStopList = pack.enrichedStopList || pack.stopList || [];
     this.state.chosenStop = pack.chosenStop;
     this.state.stopId = pack.stopId;
     this.state.stopName = pack.stopName;
@@ -141,31 +160,26 @@ const app = {
         const stopList = this.normalizeList(json);
         if (!stopList.length) continue;
 
+        const enrichedStopList = await this.enrichAllStopNames(stopList);
+
         let chosenStop = null;
-        if (stopText) {
-          const enriched = await this.enrichStopNamesIfNeeded(stopList, stopText);
-          chosenStop = enriched.find(s => this.matchesStopText(s, stopText)) || null;
-        }
-        if (!chosenStop) chosenStop = stopList[0];
+        if (stopText) chosenStop = enrichedStopList.find(s => this.matchesStopText(s, stopText)) || null;
+        if (!chosenStop) chosenStop = enrichedStopList[0];
 
         const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
         if (!stopId) continue;
 
-        const stopName = await this.resolveStopName(stopId, chosenStop);
+        const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
         const destName = this.resolveDestName(direction, routeMeta);
 
-        found.push({ chosenDirection: direction, stopList, chosenStop, stopId, stopName, destName });
+        found.push({ chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName });
       } catch (_) {}
     }
     return found;
   },
 
-  async enrichStopNamesIfNeeded(stopList, stopText) {
-    // 如果 stopText 係中文，就逐個打 stop API 攞 name_tc
-    const hasChinese = /[\u4e00-\u9fff]/.test(stopText);
-    if (!hasChinese) return stopList;
-
-    const enriched = await Promise.all(
+  async enrichAllStopNames(stopList) {
+    return Promise.all(
       stopList.map(async (s) => {
         const sid = s.stop || s.stop_id || s.id || '';
         if (!sid || s.name_tc) return s;
@@ -177,18 +191,6 @@ const app = {
         }
       })
     );
-    return enriched;
-  },
-
-  async resolveStopName(stopId, stopObj) {
-    if (stopObj?.name_tc) return stopObj.name_tc;
-    if (stopObj?.name_en) return stopObj.name_en;
-    try {
-      const detail = await this.fetchStopDetail(stopId);
-      return detail.name_tc || detail.name_en || stopId;
-    } catch (_) {
-      return stopId;
-    }
   },
 
   async fetchStopDetail(stopId) {
@@ -290,7 +292,7 @@ const app = {
   },
 
   renderIdle() {
-    this.dom.result.innerHTML = `<p class="muted">輸入路線及站名開始搜尋</p>`;
+    this.dom.result.innerHTML = `<p class="muted">輸入路線開始搜尋</p>`;
   },
 
   renderLoading() {
@@ -317,6 +319,24 @@ const app = {
     `;
   },
 
+  renderStopDropdown() {
+    const stops = this.state.enrichedStopList || [];
+    if (!stops.length) return '';
+    const currentId = this.state.stopId || '';
+    return `
+      <div style="margin-top:10px;">
+        <label class="small" style="display:block; margin-bottom:4px;">選擇站點</label>
+        <select id="stopSelect" style="width:100%; padding:8px; border-radius:8px; background:#1e1e1e; color:#fff; border:1px solid #333; font-size:14px;">
+          ${stops.map((s, idx) => {
+            const sid = s.stop || s.stop_id || s.id || '';
+            const label = s.name_tc || s.name_en || sid;
+            return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${idx + 1}. ${this.escapeHtml(label)}</option>`;
+          }).join('')}
+        </select>
+      </div>
+    `;
+  },
+
   renderResult() {
     const s = this.state;
     this.dom.result.innerHTML = `
@@ -328,6 +348,7 @@ const app = {
         <span class="small">${this.escapeHtml(this.getDirectionLabel(s.chosenDirection))}</span>
       </div>
       ${this.renderDirectionButtons()}
+      ${this.renderStopDropdown()}
       <div style="height:10px"></div>
       ${s.etas.length ? s.etas.map(item => `
         <div class="row">
@@ -337,10 +358,7 @@ const app = {
       `).join('') : '<div class="row"><span class="muted">暫無班次資料</span></div>'}
       ${s.lastUpdated ? `
         <div style="height:8px"></div>
-        <div class="row">
-          <span class="small">更新時間</span>
-          <span class="small">${this.escapeHtml(this.formatClock(s.lastUpdated))}</span>
-        </div>
+        <div class="row"><span class="small">更新時間</span><span class="small">${this.escapeHtml(this.formatClock(s.lastUpdated))}</span></div>
       ` : ''}
       ${s.sameStopRoutes.length ? `
         <div style="height:12px"></div>
@@ -356,6 +374,7 @@ const app = {
       <div class="row"><span class="small">自動刷新</span><span class="small">${this.config.refreshMs / 1000} 秒</span></div>
     `;
     this.bindDirectionButtons();
+    this.bindStopDropdown();
   },
 
   bindDirectionButtons() {
@@ -365,6 +384,16 @@ const app = {
         if (!direction || String(direction) === String(this.state.chosenDirection)) return;
         await this.handleDirectionChange(direction);
       });
+    });
+  },
+
+  bindStopDropdown() {
+    const sel = this.dom.result.querySelector('#stopSelect');
+    if (!sel) return;
+    sel.addEventListener('change', async () => {
+      const stopId = sel.value;
+      if (!stopId || stopId === this.state.stopId) return;
+      await this.handleStopChange(stopId);
     });
   },
 
