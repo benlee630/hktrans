@@ -2,67 +2,87 @@ const providers = {
   kmb: {
     key: 'kmb',
     label: 'KMB / LWB',
-    async fetchRouteMeta(route, fetchJson, normalizeList) {
+
+    async fetchRouteMeta(route, app) {
       try {
-        const url = `https://hktrans.benlee630.workers.dev/kmb/route/${encodeURIComponent(route)}`;
-        const json = await fetchJson(url);
-        const list = normalizeList(json);
+        const json = await app.fetchJson(`${app.config.API_BASE}/kmb/route/${encodeURIComponent(route)}`);
+        const list = app.normalizeList(json);
         return list[0] || json || {};
       } catch (_) {
         return {};
       }
     },
-    async resolveAllDirections(route, stopText, routeMeta, ctx) {
+
+    async resolveAllDirections(route, stopText, routeMeta, app) {
       const found = [];
+
       for (const direction of ['outbound', 'inbound']) {
-        const url = `${ctx.API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
+        const url = `${app.config.API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
         try {
-          const json = await ctx.fetchJson(url);
-          const stopList = ctx.normalizeList(json);
+          const json = await app.fetchJson(url);
+          const stopList = app.normalizeList(json);
           if (!stopList.length) continue;
 
-          const enrichedStopList = await ctx.enrichAllStopNames(stopList);
+          const enrichedStopList = await app.enrichAllStopNames(stopList);
+
           let chosenStop = null;
-          if (stopText) chosenStop = enrichedStopList.find(s => ctx.matchesStopText(s, stopText)) || null;
+          if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
           if (!chosenStop) chosenStop = enrichedStopList[0];
 
           const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
           if (!stopId) continue;
 
           const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
-          const destName = ctx.resolveDestName(direction, routeMeta);
+          const destName = this.resolveDestName(direction, routeMeta);
 
-          found.push({ chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName });
+          found.push({
+            chosenDirection: direction,
+            stopList,
+            enrichedStopList,
+            chosenStop,
+            stopId,
+            stopName,
+            destName
+          });
         } catch (_) {}
       }
+
       return found;
     },
+
     resolveDestName(direction, routeMeta) {
       const isOut = direction === 'outbound' || String(direction) === '2';
       if (isOut) return routeMeta?.dest_tc || routeMeta?.dest_en || '';
       return routeMeta?.orig_tc || routeMeta?.orig_en || '';
     },
-    async fetchEta(stopId, route, fetchJson, normalizeList) {
-      const url = `https://hktrans.benlee630.workers.dev/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
-      const json = await fetchJson(url);
-      const raw = normalizeList(json);
-      const routeUpper = String(route).toUpperCase();
 
+    async fetchEta(route, stopId, app) {
+      const url = `${app.config.API_BASE}/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
+      const json = await app.fetchJson(url);
+      const raw = app.normalizeList(json);
+
+      const routeUpper = String(route).toUpperCase();
       const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
+
       const etas = matched.slice(0, 3).map((x, idx) => ({
         label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
-        time: ctxFormatTime(x.eta),
-        status: ctxEtaStatus(x),
+        time: app.formatTime(x.eta),
+        status: app.etaStatus(x),
         rawEta: x.eta
       }));
 
       const sameStopRoutes = [];
       const seen = new Set();
+
       for (const x of raw) {
         const r = String(x?.route || '').toUpperCase();
         if (!r || r === routeUpper || seen.has(r)) continue;
         seen.add(r);
-        sameStopRoutes.push({ route: x.route, time: x.eta ? ctxFormatTime(x.eta) : '-', status: ctxEtaStatus(x) });
+        sameStopRoutes.push({
+          route: x.route,
+          time: x.eta ? app.formatTime(x.eta) : '-',
+          status: app.etaStatus(x)
+        });
         if (sameStopRoutes.length >= 3) break;
       }
 
@@ -73,17 +93,29 @@ const providers = {
   ctb: {
     key: 'ctb',
     label: 'Citybus',
-    async fetchRouteMeta() { return {}; },
-    async resolveAllDirections() { return []; },
-    async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
+    async fetchRouteMeta() {
+      return {};
+    },
+    async resolveAllDirections() {
+      return [];
+    },
+    async fetchEta() {
+      return { raw: [], etas: [], sameStopRoutes: [] };
+    }
   },
 
   mtrBus: {
     key: 'mtrBus',
     label: 'MTR Bus',
-    async fetchRouteMeta() { return {}; },
-    async resolveAllDirections() { return []; },
-    async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
+    async fetchRouteMeta() {
+      return {};
+    },
+    async resolveAllDirections() {
+      return [];
+    },
+    async fetchEta() {
+      return { raw: [], etas: [], sameStopRoutes: [] };
+    }
   }
 };
 
@@ -130,8 +162,7 @@ const app = {
     this.dom = {
       form: document.getElementById('searchForm'),
       input: document.getElementById('queryInput'),
-      result: document.getElementById('result'),
-      transportBtns: document.querySelectorAll('[data-transport]')
+      result: document.getElementById('result')
     };
   },
 
@@ -141,16 +172,6 @@ const app = {
       const q = this.dom.input.value.trim();
       if (!q) return;
       await this.handleSearch(q);
-    });
-
-    this.dom.transportBtns.forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const type = btn.dataset.transport;
-        if (!type) return;
-        this.state.transportType = type;
-        this.state.providerKey = type === 'bus' ? 'kmb' : type;
-        this.renderIdle();
-      });
     });
   },
 
@@ -170,12 +191,15 @@ const app = {
       this.state.availableDirections = [];
 
       const provider = this.getProvider();
-      const routeMeta = await provider.fetchRouteMeta(parsed.route, this.fetchJson.bind(this), this.normalizeList.bind(this));
+      if (provider.key !== 'kmb') throw new Error('暫未支援此交通工具');
+
+      const routeMeta = await provider.fetchRouteMeta(parsed.route, this);
       const found = await provider.resolveAllDirections(parsed.route, parsed.stopText, routeMeta, this);
       if (!found.length) throw new Error('找不到相符路線或站點');
 
       this.state.availableDirections = found.map(x => x.chosenDirection);
       await this.applyAndFetch(found[0], found, provider);
+
       this.pushHistory({
         route: this.state.route,
         stopName: this.state.stopName,
@@ -183,6 +207,7 @@ const app = {
         provider: this.state.providerKey,
         ts: new Date().toISOString()
       });
+
       this.startAutoRefresh();
     } catch (err) {
       this.renderError(err);
@@ -195,12 +220,15 @@ const app = {
       this.renderLoading();
 
       const provider = this.getProvider();
-      const routeMeta = await provider.fetchRouteMeta(this.state.route, this.fetchJson.bind(this), this.normalizeList.bind(this));
+      if (provider.key !== 'kmb') throw new Error('暫未支援此交通工具');
+
+      const routeMeta = await provider.fetchRouteMeta(this.state.route, this);
       const found = await provider.resolveAllDirections(this.state.route, this.state.stopText, routeMeta, this);
       if (!found.length) throw new Error('找不到相符路線');
 
       this.state.availableDirections = found.map(x => x.chosenDirection);
       const target = found.find(x => String(x.chosenDirection) === String(direction)) || found[0];
+
       await this.applyAndFetch(target, found, provider);
       this.startAutoRefresh();
     } catch (err) {
@@ -213,8 +241,7 @@ const app = {
       this.stopAutoRefresh();
       this.renderLoading();
 
-      const enriched = this.state.enrichedStopList;
-      const chosenStop = enriched.find(s => (s.stop || s.stop_id || s.id) === stopId);
+      const chosenStop = (this.state.enrichedStopList || []).find(s => (s.stop || s.stop_id || s.id) === stopId);
       if (!chosenStop) throw new Error('找不到站點');
 
       const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
@@ -260,8 +287,10 @@ const app = {
     try {
       const p = provider || this.getProvider();
       const { route, stopId } = this.state.lastResolvedQuery;
-      const etaPack = await p.fetchEta(route, stopId, this.fetchJson.bind(this), this.normalizeList.bind(this), this);
 
+      if (p.key !== 'kmb') throw new Error('暫未支援此交通工具');
+
+      const etaPack = await p.fetchEta(route, stopId, this);
       this.state.etaData = etaPack.raw || [];
       this.state.etas = etaPack.etas || [];
       this.state.sameStopRoutes = etaPack.sameStopRoutes || [];
@@ -284,8 +313,11 @@ const app = {
 
   parseQuery(q) {
     const s = q.trim();
-    const parts = s.split(/\\s+/);
-    return { route: parts[0] || '', stopText: parts.slice(1).join(' ').trim() };
+    const parts = s.split(/\s+/);
+    return {
+      route: parts[0] || '',
+      stopText: parts.slice(1).join(' ').trim()
+    };
   },
 
   normalizeList(json) {
@@ -345,7 +377,11 @@ const app = {
     const res = await fetch(url, { cache: 'no-store' });
     const text = await res.text();
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
-    try { return JSON.parse(text); } catch { throw new Error(`Invalid JSON: ${text.slice(0, 200)}`); }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Invalid JSON: ${text.slice(0, 200)}`);
+    }
   },
 
   renderIdle() {
@@ -426,7 +462,10 @@ const app = {
       `).join('') : '<div class="row"><span class="muted">暫無班次資料</span></div>'}
       ${s.lastUpdated ? `
         <div style="height:8px"></div>
-        <div class="row"><span class="small">更新時間</span><span class="small">${this.escapeHtml(this.formatClock(s.lastUpdated))}</span></div>
+        <div class="row">
+          <span class="small">更新時間</span>
+          <span class="small">${this.escapeHtml(this.formatClock(s.lastUpdated))}</span>
+        </div>
       ` : ''}
       ${s.sameStopRoutes.length ? `
         <div style="height:12px"></div>
@@ -439,7 +478,10 @@ const app = {
         `).join('')}
       ` : ''}
       <div style="height:8px"></div>
-      <div class="row"><span class="small">自動刷新</span><span class="small">${this.config.refreshMs / 1000} 秒</span></div>
+      <div class="row">
+        <span class="small">自動刷新</span>
+        <span class="small">${this.config.refreshMs / 1000} 秒</span>
+      </div>
     `;
     this.bindTransportButtons();
     this.bindDirectionButtons();
