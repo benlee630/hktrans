@@ -3,6 +3,9 @@ const providers = {
     key: 'kmb',
     label: 'KMB / LWB',
     brandName: 'KMB / LWB',
+    routeKey(route) {
+      return `kmb:${String(route || '').toUpperCase()}`;
+    },
     async fetchRouteMeta(route, app) {
       try {
         const json = await app.fetchJson(`${app.config.API_BASE}/kmb/route/${encodeURIComponent(route)}`);
@@ -20,27 +23,15 @@ const providers = {
           const json = await app.fetchJson(url);
           const stopList = app.normalizeList(json);
           if (!stopList.length) continue;
-
           const enrichedStopList = await app.enrichAllStopNames(stopList);
           let chosenStop = null;
           if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
           if (!chosenStop) chosenStop = enrichedStopList[0];
-
           const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
           if (!stopId) continue;
-
           const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
           const destName = this.resolveDestName(direction, routeMeta);
-
-          found.push({
-            chosenDirection: direction,
-            stopList,
-            enrichedStopList,
-            chosenStop,
-            stopId,
-            stopName,
-            destName
-          });
+          found.push({ chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName });
         } catch (_) {}
       }
       return found;
@@ -55,7 +46,6 @@ const providers = {
       const json = await app.fetchJson(url);
       const raw = app.normalizeList(json);
       const routeUpper = String(route).toUpperCase();
-
       const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
       const etas = matched.slice(0, 3).map((x, idx) => ({
         label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
@@ -63,21 +53,15 @@ const providers = {
         status: app.etaStatus(x),
         rawEta: x.eta
       }));
-
       const sameStopRoutes = [];
       const seen = new Set();
       for (const x of raw) {
         const r = String(x?.route || '').toUpperCase();
         if (!r || r === routeUpper || seen.has(r)) continue;
         seen.add(r);
-        sameStopRoutes.push({
-          route: x.route,
-          time: x.eta ? app.formatTime(x.eta) : '-',
-          status: app.etaStatus(x)
-        });
+        sameStopRoutes.push({ route: x.route, time: x.eta ? app.formatTime(x.eta) : '-', status: app.etaStatus(x) });
         if (sameStopRoutes.length >= 3) break;
       }
-
       return { raw, etas, sameStopRoutes };
     }
   },
@@ -86,10 +70,13 @@ const providers = {
     key: 'ctb',
     label: 'Citybus',
     brandName: 'Citybus',
+    routeKey(route) {
+      return `ctb:${String(route || '').toUpperCase()}`;
+    },
 
     async fetchRouteMeta(route, app) {
       try {
-        const json = await app.fetchJson(`${app.config.API_BASE}/ctb/route/${encodeURIComponent(route)}`);
+        const json = await app.fetchJson(`https://rt.data.gov.hk/v2/transport/citybus/route/ctb/${encodeURIComponent(route)}`);
         const list = app.normalizeList(json);
         return list[0] || json || {};
       } catch (_) {
@@ -98,61 +85,69 @@ const providers = {
     },
 
     async resolveAllDirections(route, stopText, routeMeta, app) {
+      const routeUpper = String(route || '').toUpperCase();
+      const base = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/ctb/${encodeURIComponent(route)}`;
+      const directionsToTry = ['outbound', 'inbound', 'I', 'O', '1', '2'];
+
+      const tryOne = async (direction) => {
+        const url = `${base}/${encodeURIComponent(direction)}`;
+        const json = await app.fetchJson(url);
+        const stopList = app.normalizeList(json);
+        if (!stopList.length) return null;
+
+        const enrichedStopList = stopList.map(s => ({
+          ...s,
+          name_tc: s.name_tc || s.stop_name_tc || s.name || '',
+          name_en: s.name_en || s.stop_name_en || ''
+        }));
+
+        let chosenStop = null;
+        if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
+        if (!chosenStop) chosenStop = enrichedStopList[0];
+
+        const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || chosenStop.stopId || '';
+        if (!stopId) return null;
+
+        const stopName = chosenStop.name_tc || chosenStop.name_en || chosenStop.name || stopId;
+        const destName = this.resolveDestName(direction, routeMeta);
+
+        return { chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName };
+      };
+
       const found = [];
-      for (const direction of ['outbound', 'inbound']) {
-        const url = `${app.config.API_BASE}/ctb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
+      for (const direction of directionsToTry) {
         try {
-          const json = await app.fetchJson(url);
-          const stopList = app.normalizeList(json);
-          if (!stopList.length) continue;
-
-          const enrichedStopList = await Promise.all(stopList.map(async (s) => {
-            const sid = s.stop || s.stop_id || s.id || '';
-            if (!sid) return s;
-            return {
-              ...s,
-              name_tc: s.name_tc || s.name || s.stop_name_tc || '',
-              name_en: s.name_en || s.stop_name_en || ''
-            };
-          }));
-
-          let chosenStop = null;
-          if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
-          if (!chosenStop) chosenStop = enrichedStopList[0];
-
-          const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
-          if (!stopId) continue;
-
-          const stopName = chosenStop.name_tc || chosenStop.name_en || chosenStop.name || stopId;
-          const destName = this.resolveDestName(direction, routeMeta);
-
-          found.push({
-            chosenDirection: direction,
-            stopList,
-            enrichedStopList,
-            chosenStop,
-            stopId,
-            stopName,
-            destName
-          });
+          const pack = await tryOne(direction);
+          if (pack) found.push(pack);
         } catch (_) {}
       }
-      return found;
+
+      const unique = [];
+      const seen = new Set();
+      for (const item of found) {
+        const key = `${String(item.chosenDirection)}:${String(item.stopId)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(item);
+      }
+      return unique;
     },
 
     resolveDestName(direction, routeMeta) {
-      const isOut = direction === 'outbound' || String(direction) === '2';
-      if (isOut) return routeMeta?.dest_tc || routeMeta?.dest_en || '';
-      return routeMeta?.orig_tc || routeMeta?.orig_en || '';
+      const d = String(direction || '').toLowerCase();
+      const isOut = d === 'outbound' || d === 'o' || d === '2';
+      if (isOut) return routeMeta?.dest_en || routeMeta?.dest_tc || '';
+      return routeMeta?.orig_en || routeMeta?.orig_tc || '';
     },
 
     async fetchEta(route, stopId, app) {
-      const url = `${app.config.API_BASE}/ctb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
+      const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/ctb/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
       const json = await app.fetchJson(url);
       const raw = app.normalizeList(json);
-      const routeUpper = String(route).toUpperCase();
 
+      const routeUpper = String(route || '').toUpperCase();
       const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
+
       const etas = matched.slice(0, 3).map((x, idx) => ({
         label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
         time: app.formatTime(x.eta),
@@ -182,6 +177,9 @@ const providers = {
     key: 'mtrBus',
     label: 'MTR Bus',
     brandName: 'MTR Bus',
+    routeKey(route) {
+      return `mtrBus:${String(route || '').toUpperCase()}`;
+    },
     async fetchRouteMeta() { return {}; },
     async resolveAllDirections() { return []; },
     async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
@@ -288,6 +286,7 @@ const app = {
       await this.applyAndFetch(found[0], found, provider);
 
       this.pushHistory({
+        routeKey: provider.routeKey ? provider.routeKey(parsed.route) : `${this.state.providerKey}:${parsed.route}`,
         route: this.state.route,
         stopName: this.state.stopName,
         direction: this.state.chosenDirection,
