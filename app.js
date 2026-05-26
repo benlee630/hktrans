@@ -150,12 +150,14 @@ const providers = {
         const enrichedStopList = stopList.map((s, idx) => {
           const rawStopId = s.stop || s.stop_id || s.id || s.stopId || s.stopID || s.bus_stop_id || s.busStopId || '';
           const seq = s.seq || s.sequence || s.stop_seq || s.bus_stop_seq || idx + 1;
-          const nameTc = s.name_tc || s.stop_name_tc || s.name || s.stopname_tc || s.stopNameTc || s.name_chi || '';
-          const nameEn = s.name_en || s.stop_name_en || s.stopname_en || s.stopNameEn || s.name_eng || '';
+          const nameTc = s.name_tc || s.stop_name_tc || s.stopNameTc || s.STOP_NAMEC || s.name || s.name_chi || '';
+          const nameEn = s.name_en || s.stop_name_en || s.stopNameEn || s.STOP_NAMEE || s.name_eng || '';
           return {
             ...s,
             __rawStopId: rawStopId,
             __seq: String(seq),
+            stop_name_tc: nameTc,
+            stop_name_en: nameEn,
             name_tc: nameTc,
             name_en: nameEn
           };
@@ -165,8 +167,10 @@ const providers = {
         const stopTextNorm = String(stopText || '').trim().toUpperCase();
         if (stopTextNorm) {
           chosenStop = enrichedStopList.find(s => {
-            const hay = [s.name_tc, s.name_en, s.__rawStopId, s.__seq, s.stop, s.stop_id, s.id]
-              .filter(Boolean).join(' ').toUpperCase();
+            const hay = [
+              s.stop_name_tc, s.stop_name_en, s.name_tc, s.name_en,
+              s.__rawStopId, s.__seq, s.stop, s.stop_id, s.id
+            ].filter(Boolean).join(' ').toUpperCase();
             return hay.includes(stopTextNorm);
           }) || null;
         }
@@ -327,20 +331,19 @@ const app = {
 
   getStopDisplayName(stop, stopId) {
     return (
-      stop?.name_tc ||
-      stop?.name_en ||
       stop?.stop_name_tc ||
       stop?.stop_name_en ||
+      stop?.STOP_NAMEC ||
+      stop?.STOP_NAMEE ||
+      stop?.name_tc ||
+      stop?.name_en ||
       stop?.stopNameTc ||
       stop?.stopNameEn ||
+      stop?.name ||
       stop?.__seq ||
       stopId ||
       ''
     );
-  },
-
-  renderShellMessage() {
-    return this.state.transportSelected ? '輸入路線開始搜尋' : '請先揀交通工具';
   },
 
   renderTransportPicker() {
@@ -353,8 +356,8 @@ const app = {
     `;
   },
 
-  renderShell() {
-    this.renderIdle();
+  renderShellMessage() {
+    return this.state.transportSelected ? '輸入路線開始搜尋' : '請先揀交通工具';
   },
 
   renderIdle() {
@@ -485,7 +488,6 @@ const app = {
   async refreshEta(provider = null) {
     if (!this.state.lastResolvedQuery || this.state.isRefreshing) return;
     this.state.isRefreshing = true;
-
     try {
       const p = provider || this.getProvider();
       const { route, stopId } = this.state.lastResolvedQuery;
@@ -529,10 +531,12 @@ const app = {
 
   matchesStopText(stop, text) {
     const hay = [
-      stop?.name_tc || '',
-      stop?.name_en || '',
       stop?.stop_name_tc || '',
       stop?.stop_name_en || '',
+      stop?.name_tc || '',
+      stop?.name_en || '',
+      stop?.STOP_NAMEC || '',
+      stop?.STOP_NAMEE || '',
       stop?.__rawStopId || '',
       stop?.__seq || '',
       stop?.stop || '',
@@ -545,8 +549,10 @@ const app = {
     return stopList.map((s, idx) => ({
       ...s,
       __seq: String(s.__seq || s.seq || s.sequence || s.stop_seq || idx + 1),
-      name_tc: s.name_tc || s.stop_name_tc || s.stopNameTc || s.name || s.name_chi || '',
-      name_en: s.name_en || s.stop_name_en || s.stopNameEn || s.name_eng || ''
+      stop_name_tc: s.stop_name_tc || s.STOP_NAMEC || s.name_tc || s.name || s.stopNameTc || '',
+      stop_name_en: s.stop_name_en || s.STOP_NAMEE || s.name_en || s.stopNameEn || '',
+      name_tc: s.name_tc || s.stop_name_tc || s.STOP_NAMEC || s.name || '',
+      name_en: s.name_en || s.stop_name_en || s.STOP_NAMEE || s.name || ''
     }));
   },
 
