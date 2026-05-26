@@ -2,7 +2,6 @@ const providers = {
   kmb: {
     key: 'kmb',
     label: 'KMB / LWB',
-
     async fetchRouteMeta(route, app) {
       try {
         const json = await app.fetchJson(`${app.config.API_BASE}/kmb/route/${encodeURIComponent(route)}`);
@@ -12,10 +11,8 @@ const providers = {
         return {};
       }
     },
-
     async resolveAllDirections(route, stopText, routeMeta, app) {
       const found = [];
-
       for (const direction of ['outbound', 'inbound']) {
         const url = `${app.config.API_BASE}/kmb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
         try {
@@ -24,7 +21,6 @@ const providers = {
           if (!stopList.length) continue;
 
           const enrichedStopList = await app.enrichAllStopNames(stopList);
-
           let chosenStop = null;
           if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
           if (!chosenStop) chosenStop = enrichedStopList[0];
@@ -46,24 +42,20 @@ const providers = {
           });
         } catch (_) {}
       }
-
       return found;
     },
-
     resolveDestName(direction, routeMeta) {
       const isOut = direction === 'outbound' || String(direction) === '2';
       if (isOut) return routeMeta?.dest_tc || routeMeta?.dest_en || '';
       return routeMeta?.orig_tc || routeMeta?.orig_en || '';
     },
-
     async fetchEta(route, stopId, app) {
       const url = `${app.config.API_BASE}/kmb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
       const json = await app.fetchJson(url);
       const raw = app.normalizeList(json);
-
       const routeUpper = String(route).toUpperCase();
-      const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
 
+      const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
       const etas = matched.slice(0, 3).map((x, idx) => ({
         label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
         time: app.formatTime(x.eta),
@@ -73,7 +65,6 @@ const providers = {
 
       const sameStopRoutes = [];
       const seen = new Set();
-
       for (const x of raw) {
         const r = String(x?.route || '').toUpperCase();
         if (!r || r === routeUpper || seen.has(r)) continue;
@@ -93,36 +84,24 @@ const providers = {
   ctb: {
     key: 'ctb',
     label: 'Citybus',
-    async fetchRouteMeta() {
-      return {};
-    },
-    async resolveAllDirections() {
-      return [];
-    },
-    async fetchEta() {
-      return { raw: [], etas: [], sameStopRoutes: [] };
-    }
+    async fetchRouteMeta() { return {}; },
+    async resolveAllDirections() { return []; },
+    async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
   },
 
   mtrBus: {
     key: 'mtrBus',
     label: 'MTR Bus',
-    async fetchRouteMeta() {
-      return {};
-    },
-    async resolveAllDirections() {
-      return [];
-    },
-    async fetchEta() {
-      return { raw: [], etas: [], sameStopRoutes: [] };
-    }
+    async fetchRouteMeta() { return {}; },
+    async resolveAllDirections() { return []; },
+    async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
   }
 };
 
 const app = {
   state: {
-    transportType: 'bus',
-    providerKey: 'kmb',
+    transportType: '',
+    providerKey: '',
     route: '',
     stopText: '',
     chosenDirection: null,
@@ -141,7 +120,8 @@ const app = {
     isRefreshing: false,
     refreshTimer: null,
     lastResolvedQuery: null,
-    availableDirections: []
+    availableDirections: [],
+    transportSelected: false
   },
 
   config: {
@@ -155,7 +135,7 @@ const app = {
     this.cacheDom();
     this.bindEvents();
     this.loadPersistedState();
-    this.renderIdle();
+    this.renderShell();
   },
 
   cacheDom() {
@@ -171,12 +151,28 @@ const app = {
       e.preventDefault();
       const q = this.dom.input.value.trim();
       if (!q) return;
+
+      if (!this.state.transportSelected) {
+        this.renderMessage('請先揀交通工具');
+        return;
+      }
+
       await this.handleSearch(q);
     });
   },
 
   getProvider() {
-    return providers[this.state.providerKey] || providers.kmb;
+    return providers[this.state.providerKey] || null;
+  },
+
+  renderShell() {
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="small">請先揀交通工具，再輸入路線同站名</span>
+      </div>
+    `;
+    this.bindTransportButtons();
   },
 
   async handleSearch(q) {
@@ -191,6 +187,7 @@ const app = {
       this.state.availableDirections = [];
 
       const provider = this.getProvider();
+      if (!provider) throw new Error('請先揀交通工具');
       if (provider.key !== 'kmb') throw new Error('暫未支援此交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(parsed.route, this);
@@ -220,6 +217,7 @@ const app = {
       this.renderLoading();
 
       const provider = this.getProvider();
+      if (!provider) throw new Error('請先揀交通工具');
       if (provider.key !== 'kmb') throw new Error('暫未支援此交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(this.state.route, this);
@@ -288,6 +286,7 @@ const app = {
       const p = provider || this.getProvider();
       const { route, stopId } = this.state.lastResolvedQuery;
 
+      if (!p) throw new Error('請先揀交通工具');
       if (p.key !== 'kmb') throw new Error('暫未支援此交通工具');
 
       const etaPack = await p.fetchEta(route, stopId, this);
@@ -351,12 +350,6 @@ const app = {
     return list[0] || json?.data || json || {};
   },
 
-  resolveDestName(direction, routeMeta) {
-    const isOut = direction === 'outbound' || String(direction) === '2';
-    if (isOut) return routeMeta?.dest_tc || routeMeta?.dest_en || '';
-    return routeMeta?.orig_tc || routeMeta?.orig_en || '';
-  },
-
   etaStatus(x) {
     const delay = Number(x?.delay || 0);
     return delay > 5 ? `延誤 ${delay} 分鐘` : '正常';
@@ -384,12 +377,39 @@ const app = {
     }
   },
 
+  renderTransportPicker() {
+    return `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <button type="button" class="transport-btn ${this.state.transportType === 'bus' ? 'active' : ''}" data-transport="bus">巴士</button>
+        <button type="button" class="transport-btn ${this.state.transportType === 'mtr' ? 'active' : ''}" data-transport="mtr">MTR</button>
+        <button type="button" class="transport-btn ${this.state.transportType === 'other' ? 'active' : ''}" data-transport="other">其他</button>
+      </div>
+    `;
+  },
+
+  renderShellMessage() {
+    if (!this.state.transportSelected) return '請先揀交通工具，再輸入路線同站名';
+    return '輸入路線開始搜尋';
+  },
+
   renderIdle() {
-    this.dom.result.innerHTML = `<p class="muted">輸入路線開始搜尋</p>`;
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">${this.renderShellMessage()}</span>
+      </div>
+    `;
+    this.bindTransportButtons();
   },
 
   renderLoading() {
-    this.dom.result.innerHTML = `<p class="muted">搜尋中...</p>`;
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">搜尋中...</span>
+      </div>
+    `;
+    this.bindTransportButtons();
   },
 
   getDirectionLabel(direction) {
@@ -426,16 +446,6 @@ const app = {
             return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${idx + 1}. ${this.escapeHtml(label)}</option>`;
           }).join('')}
         </select>
-      </div>
-    `;
-  },
-
-  renderTransportPicker() {
-    return `
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-        <button type="button" class="transport-btn ${this.state.transportType === 'bus' ? 'active' : ''}" data-transport="bus">巴士</button>
-        <button type="button" class="transport-btn ${this.state.transportType === 'mtr' ? 'active' : ''}" data-transport="mtr">MTR</button>
-        <button type="button" class="transport-btn ${this.state.transportType === 'other' ? 'active' : ''}" data-transport="other">其他</button>
       </div>
     `;
   },
@@ -495,6 +505,7 @@ const app = {
         if (!type) return;
         this.state.transportType = type;
         this.state.providerKey = type === 'bus' ? 'kmb' : type;
+        this.state.transportSelected = true;
         this.renderIdle();
       });
     });
@@ -520,13 +531,25 @@ const app = {
     });
   },
 
+  renderMessage(msg) {
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">${this.escapeHtml(msg)}</span>
+      </div>
+    `;
+    this.bindTransportButtons();
+  },
+
   renderError(err) {
     this.dom.result.innerHTML = `
-      <div class="row">
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
         <strong>⚠️ 無實時數據</strong>
         <span class="small">${this.escapeHtml(err.message || 'Unknown error')}</span>
       </div>
     `;
+    this.bindTransportButtons();
   },
 
   pushHistory(item) {
