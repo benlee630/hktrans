@@ -20,27 +20,15 @@ const providers = {
           const json = await app.fetchJson(url);
           const stopList = app.normalizeList(json);
           if (!stopList.length) continue;
-
           const enrichedStopList = await app.enrichAllStopNames(stopList);
           let chosenStop = null;
           if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
           if (!chosenStop) chosenStop = enrichedStopList[0];
-
           const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
           if (!stopId) continue;
-
           const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
           const destName = this.resolveDestName(direction, routeMeta);
-
-          found.push({
-            chosenDirection: direction,
-            stopList,
-            enrichedStopList,
-            chosenStop,
-            stopId,
-            stopName,
-            destName
-          });
+          found.push({ chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName });
         } catch (_) {}
       }
       return found;
@@ -55,7 +43,6 @@ const providers = {
       const json = await app.fetchJson(url);
       const raw = app.normalizeList(json);
       const routeUpper = String(route).toUpperCase();
-
       const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
       const etas = matched.slice(0, 3).map((x, idx) => ({
         label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
@@ -63,18 +50,13 @@ const providers = {
         status: app.etaStatus(x),
         rawEta: x.eta
       }));
-
       const sameStopRoutes = [];
       const seen = new Set();
       for (const x of raw) {
         const r = String(x?.route || '').toUpperCase();
         if (!r || r === routeUpper || seen.has(r)) continue;
         seen.add(r);
-        sameStopRoutes.push({
-          route: x.route,
-          time: x.eta ? app.formatTime(x.eta) : '-',
-          status: app.etaStatus(x)
-        });
+        sameStopRoutes.push({ route: x.route, time: x.eta ? app.formatTime(x.eta) : '-', status: app.etaStatus(x) });
         if (sameStopRoutes.length >= 3) break;
       }
       return { raw, etas, sameStopRoutes };
@@ -85,9 +67,73 @@ const providers = {
     key: 'ctb',
     label: 'Citybus',
     brandName: 'Citybus',
-    async fetchRouteMeta() { return {}; },
-    async resolveAllDirections() { return []; },
-    async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
+    async fetchRouteMeta(route, app) {
+      try {
+        const json = await app.fetchJson(`${app.config.API_BASE}/ctb/route/${encodeURIComponent(route)}`);
+        const list = app.normalizeList(json);
+        return list[0] || json || {};
+      } catch (_) {
+        return {};
+      }
+    },
+    async resolveAllDirections(route, stopText, routeMeta, app) {
+      const found = [];
+      for (const direction of ['outbound', 'inbound']) {
+        const url = `${app.config.API_BASE}/ctb/route-stop/${encodeURIComponent(route)}/${encodeURIComponent(direction)}/1`;
+        try {
+          const json = await app.fetchJson(url);
+          const stopList = app.normalizeList(json);
+          if (!stopList.length) continue;
+
+          const enrichedStopList = await Promise.all(stopList.map(async (s) => {
+            const sid = s.stop || s.stop_id || s.id || '';
+            if (!sid || s.name_tc) return s;
+            return { ...s, name_tc: s.name_tc || s.name || '', name_en: s.name_en || '' };
+          }));
+
+          let chosenStop = null;
+          if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
+          if (!chosenStop) chosenStop = enrichedStopList[0];
+
+          const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || '';
+          if (!stopId) continue;
+
+          const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
+          const destName = this.resolveDestName(direction, routeMeta);
+
+          found.push({ chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName });
+        } catch (_) {}
+      }
+      return found;
+    },
+    resolveDestName(direction, routeMeta) {
+      const isOut = direction === 'outbound' || String(direction) === '2';
+      if (isOut) return routeMeta?.dest_tc || routeMeta?.dest_en || '';
+      return routeMeta?.orig_tc || routeMeta?.orig_en || '';
+    },
+    async fetchEta(route, stopId, app) {
+      const url = `${app.config.API_BASE}/ctb/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
+      const json = await app.fetchJson(url);
+      const raw = app.normalizeList(json);
+      const routeUpper = String(route).toUpperCase();
+      const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
+      const etas = matched.slice(0, 3).map((x, idx) => ({
+        label: idx === 0 ? '下 1 班' : idx === 1 ? '下 2 班' : '下 3 班',
+        time: app.formatTime(x.eta),
+        status: app.etaStatus(x),
+        rawEta: x.eta
+      }));
+      const sameStopRoutes = [];
+      const seen = new Set();
+      for (const x of raw) {
+        const r = String(x?.route || '').toUpperCase();
+        if (!r || r === routeUpper || seen.has(r)) continue;
+        seen.add(r);
+        sameStopRoutes.push({ route: x.route, time: x.eta ? app.formatTime(x.eta) : '-', status: app.etaStatus(x) });
+        if (sameStopRoutes.length >= 3) break;
+      }
+      return { raw, etas, sameStopRoutes };
+    }
   },
 
   mtrBus: {
@@ -191,7 +237,7 @@ const app = {
 
       const provider = this.getProvider();
       if (!provider) throw new Error('請先揀交通工具');
-      if (provider.key !== 'kmb') throw new Error('暫未支援此交通工具');
+      if (!provider.fetchRouteMeta) throw new Error('暫未支援此交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(parsed.route, this);
       const found = await provider.resolveAllDirections(parsed.route, parsed.stopText, routeMeta, this);
@@ -220,8 +266,7 @@ const app = {
       this.renderLoading();
 
       const provider = this.getProvider();
-      if (!provider) throw new Error('請先揀交通工具');
-      if (provider.key !== 'kmb') throw new Error('暫未支援此交通工具');
+      if (!provider || !provider.fetchRouteMeta) throw new Error('暫未支援此交通工具');
 
       const routeMeta = await provider.fetchRouteMeta(this.state.route, this);
       const found = await provider.resolveAllDirections(this.state.route, this.state.stopText, routeMeta, this);
@@ -290,8 +335,7 @@ const app = {
       const p = provider || this.getProvider();
       const { route, stopId } = this.state.lastResolvedQuery;
 
-      if (!p) throw new Error('請先揀交通工具');
-      if (p.key !== 'kmb') throw new Error('暫未支援此交通工具');
+      if (!p || !p.fetchEta) throw new Error('暫未支援此交通工具');
 
       const etaPack = await p.fetchEta(route, stopId, this);
       this.state.etaData = etaPack.raw || [];
