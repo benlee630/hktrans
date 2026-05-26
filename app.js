@@ -2,6 +2,7 @@ const providers = {
   kmb: {
     key: 'kmb',
     label: 'KMB / LWB',
+    brandName: 'KMB / LWB',
     async fetchRouteMeta(route, app) {
       try {
         const json = await app.fetchJson(`${app.config.API_BASE}/kmb/route/${encodeURIComponent(route)}`);
@@ -76,7 +77,6 @@ const providers = {
         });
         if (sameStopRoutes.length >= 3) break;
       }
-
       return { raw, etas, sameStopRoutes };
     }
   },
@@ -84,6 +84,7 @@ const providers = {
   ctb: {
     key: 'ctb',
     label: 'Citybus',
+    brandName: 'Citybus',
     async fetchRouteMeta() { return {}; },
     async resolveAllDirections() { return []; },
     async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
@@ -92,6 +93,7 @@ const providers = {
   mtrBus: {
     key: 'mtrBus',
     label: 'MTR Bus',
+    brandName: 'MTR Bus',
     async fetchRouteMeta() { return {}; },
     async resolveAllDirections() { return []; },
     async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
@@ -111,6 +113,7 @@ const app = {
     stopId: '',
     stopName: '',
     destName: '',
+    brandName: '',
     etaData: [],
     etas: [],
     sameStopRoutes: [],
@@ -169,7 +172,7 @@ const app = {
     this.dom.result.innerHTML = `
       ${this.renderTransportPicker()}
       <div class="row" style="margin-top:10px;">
-        <span class="small">請先揀交通工具，再輸入路線同站名</span>
+        <span class="muted">請先揀交通工具，再輸入路線同站名</span>
       </div>
     `;
     this.bindTransportButtons();
@@ -268,6 +271,7 @@ const app = {
     this.state.stopId = pack.stopId;
     this.state.stopName = pack.stopName;
     this.state.destName = pack.destName || '';
+    this.state.brandName = provider?.brandName || '';
     this.state.availableDirections = allFound.map(x => x.chosenDirection);
     this.state.lastResolvedQuery = {
       route: this.state.route,
@@ -456,6 +460,9 @@ const app = {
       ${this.renderTransportPicker()}
       <div class="row">
         <strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(s.destName || s.stopName || '')}</strong>
+      </div>
+      <div class="row" style="margin-top:4px;">
+        <span class="small">營辦商：${this.escapeHtml(s.brandName || '')}</span>
       </div>
       <div class="row" style="margin-top:4px;">
         <span class="small">站點：${this.escapeHtml(s.stopName || '')}</span>
