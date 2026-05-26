@@ -3,17 +3,13 @@ const providers = {
     key: 'kmb',
     label: 'KMB / LWB',
     brandName: 'KMB / LWB',
-    routeKey(route) {
-      return `kmb:${String(route || '').toUpperCase()}`;
-    },
+    routeKey(route) { return `kmb:${String(route || '').toUpperCase()}`; },
     async fetchRouteMeta(route, app) {
       try {
         const json = await app.fetchJson(`${app.config.API_BASE}/kmb/route/${encodeURIComponent(route)}`);
         const list = app.normalizeList(json);
         return list[0] || json || {};
-      } catch (_) {
-        return {};
-      }
+      } catch (_) { return {}; }
     },
     async resolveAllDirections(route, stopText, routeMeta, app) {
       const found = [];
@@ -70,82 +66,70 @@ const providers = {
     key: 'ctb',
     label: 'Citybus',
     brandName: 'Citybus',
-    routeKey(route) {
-      return `ctb:${String(route || '').toUpperCase()}`;
-    },
+    routeKey(route) { return `ctb:${String(route || '').toUpperCase()}`; },
 
     async fetchRouteMeta(route, app) {
       try {
         const json = await app.fetchJson(`https://rt.data.gov.hk/v2/transport/citybus/route/ctb/${encodeURIComponent(route)}`);
-        const list = app.normalizeList(json);
-        return list[0] || json || {};
-      } catch (_) {
-        return {};
-      }
+        return json?.data || json || {};
+      } catch (_) { return {}; }
     },
 
     async resolveAllDirections(route, stopText, routeMeta, app) {
-      const routeUpper = String(route || '').toUpperCase();
-      const base = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/ctb/${encodeURIComponent(route)}`;
-      const directionsToTry = ['outbound', 'inbound', 'I', 'O', '1', '2'];
-
-      const tryOne = async (direction) => {
-        const url = `${base}/${encodeURIComponent(direction)}`;
-        const json = await app.fetchJson(url);
-        const stopList = app.normalizeList(json);
-        if (!stopList.length) return null;
-
-        const enrichedStopList = stopList.map(s => ({
-          ...s,
-          name_tc: s.name_tc || s.stop_name_tc || s.name || '',
-          name_en: s.name_en || s.stop_name_en || ''
-        }));
-
-        let chosenStop = null;
-        if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
-        if (!chosenStop) chosenStop = enrichedStopList[0];
-
-        const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || chosenStop.stopId || '';
-        if (!stopId) return null;
-
-        const stopName = chosenStop.name_tc || chosenStop.name_en || chosenStop.name || stopId;
-        const destName = this.resolveDestName(direction, routeMeta);
-
-        return { chosenDirection: direction, stopList, enrichedStopList, chosenStop, stopId, stopName, destName };
-      };
-
+      const routeData = routeMeta?.data || routeMeta || {};
+      const directions = ['outbound', 'inbound'];
       const found = [];
-      for (const direction of directionsToTry) {
+
+      for (const dir of directions) {
         try {
-          const pack = await tryOne(direction);
-          if (pack) found.push(pack);
+          const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/ctb/${encodeURIComponent(route)}/${encodeURIComponent(dir)}`;
+          const json = await app.fetchJson(url);
+          const stopList = app.normalizeList(json);
+          if (!stopList.length) continue;
+
+          const enrichedStopList = stopList.map(s => ({
+            ...s,
+            name_tc: s.name_tc || s.stop_name_tc || s.name || '',
+            name_en: s.name_en || s.stop_name_en || ''
+          }));
+
+          let chosenStop = null;
+          if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
+          if (!chosenStop) chosenStop = enrichedStopList[0];
+
+          const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || chosenStop.stopId || '';
+          if (!stopId) continue;
+
+          const stopName = chosenStop.name_tc || chosenStop.name_en || chosenStop.name || stopId;
+          const destName = this.resolveDestName(dir, routeData);
+
+          found.push({
+            chosenDirection: dir,
+            stopList,
+            enrichedStopList,
+            chosenStop,
+            stopId,
+            stopName,
+            destName
+          });
         } catch (_) {}
       }
 
-      const unique = [];
-      const seen = new Set();
-      for (const item of found) {
-        const key = `${String(item.chosenDirection)}:${String(item.stopId)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        unique.push(item);
-      }
-      return unique;
+      return found;
     },
 
     resolveDestName(direction, routeMeta) {
       const d = String(direction || '').toLowerCase();
       const isOut = d === 'outbound' || d === 'o' || d === '2';
-      if (isOut) return routeMeta?.dest_en || routeMeta?.dest_tc || '';
-      return routeMeta?.orig_en || routeMeta?.orig_tc || '';
+      if (isOut) return routeMeta?.dest_en || routeMeta?.dest_tc || routeMeta?.dest || '';
+      return routeMeta?.orig_en || routeMeta?.orig_tc || routeMeta?.orig || '';
     },
 
     async fetchEta(route, stopId, app) {
       const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/ctb/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/1`;
       const json = await app.fetchJson(url);
       const raw = app.normalizeList(json);
-
-      const routeUpper = String(route || '').toUpperCase();
+      const routeUpper = String(route).toUpperCase();
       const matched = raw.filter(x => String(x?.route || '').toUpperCase() === routeUpper && x?.eta);
 
       const etas = matched.slice(0, 3).map((x, idx) => ({
@@ -177,9 +161,7 @@ const providers = {
     key: 'mtrBus',
     label: 'MTR Bus',
     brandName: 'MTR Bus',
-    routeKey(route) {
-      return `mtrBus:${String(route || '').toUpperCase()}`;
-    },
+    routeKey(route) { return `mtrBus:${String(route || '').toUpperCase()}`; },
     async fetchRouteMeta() { return {}; },
     async resolveAllDirections() { return []; },
     async fetchEta() { return { raw: [], etas: [], sameStopRoutes: [] }; }
@@ -240,19 +222,13 @@ const app = {
       e.preventDefault();
       const q = this.dom.input.value.trim();
       if (!q) return;
-
-      if (!this.state.transportSelected) {
-        this.renderMessage('請先揀交通工具');
-        return;
-      }
-
+      if (!this.state.transportSelected) return this.renderMessage('請先揀交通工具');
       await this.handleSearch(q);
     });
   },
 
-  getProvider() {
-    return providers[this.state.providerKey] || null;
-  },
+  getProvider() { return providers[this.state.providerKey] || null; },
+  getRouteKey(route) { const p = this.getProvider(); return p?.routeKey ? p.routeKey(route) : `${this.state.providerKey}:${String(route || '').toUpperCase()}`; },
 
   renderShell() {
     this.dom.result.innerHTML = `
@@ -286,7 +262,7 @@ const app = {
       await this.applyAndFetch(found[0], found, provider);
 
       this.pushHistory({
-        routeKey: provider.routeKey ? provider.routeKey(parsed.route) : `${this.state.providerKey}:${parsed.route}`,
+        routeKey: this.getRouteKey(this.state.route),
         route: this.state.route,
         stopName: this.state.stopName,
         direction: this.state.chosenDirection,
@@ -327,7 +303,7 @@ const app = {
       this.stopAutoRefresh();
       this.renderLoading();
 
-      const chosenStop = (this.state.enrichedStopList || []).find(s => (s.stop || s.stop_id || s.id) === stopId);
+      const chosenStop = (this.state.enrichedStopList || []).find(s => (s.stop || s.stop_id || s.id || s.stopId) === stopId);
       if (!chosenStop) throw new Error('找不到站點');
 
       const stopName = chosenStop.name_tc || chosenStop.name_en || stopId;
@@ -400,10 +376,7 @@ const app = {
   parseQuery(q) {
     const s = q.trim();
     const parts = s.split(/\s+/);
-    return {
-      route: parts[0] || '',
-      stopText: parts.slice(1).join(' ').trim()
-    };
+    return { route: parts[0] || '', stopText: parts.slice(1).join(' ').trim() };
   },
 
   normalizeList(json) {
@@ -413,13 +386,13 @@ const app = {
   },
 
   matchesStopText(stop, text) {
-    const hay = [stop?.name_tc || '', stop?.name_en || '', stop?.dest_tc || '', stop?.stop || ''].join(' ').toUpperCase();
+    const hay = [stop?.name_tc || '', stop?.name_en || '', stop?.dest_tc || '', stop?.stop || '', stop?.stopId || ''].join(' ').toUpperCase();
     return hay.includes(String(text || '').toUpperCase());
   },
 
   async enrichAllStopNames(stopList) {
     return Promise.all(stopList.map(async (s) => {
-      const sid = s.stop || s.stop_id || s.id || '';
+      const sid = s.stop || s.stop_id || s.id || s.stopId || '';
       if (!sid || s.name_tc) return s;
       try {
         const detail = await this.fetchStopDetail(sid);
@@ -456,12 +429,8 @@ const app = {
   async fetchJson(url) {
     const res = await fetch(url, { cache: 'no-store' });
     const text = await res.text();
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error(`Invalid JSON: ${text.slice(0, 200)}`);
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 250)}`);
+    try { return JSON.parse(text); } catch { throw new Error(`Invalid JSON: ${text.slice(0, 250)}`); }
   },
 
   renderTransportPicker() {
@@ -480,22 +449,12 @@ const app = {
   },
 
   renderIdle() {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">${this.renderShellMessage()}</span>
-      </div>
-    `;
+    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">${this.renderShellMessage()}</span></div>`;
     this.bindTransportButtons();
   },
 
   renderLoading() {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">搜尋中...</span>
-      </div>
-    `;
+    this.dom.result.innerHTML = `${this.renderTransportPicker()}<div class="row" style="margin-top:10px;"><span class="muted">搜尋中...</span></div>`;
     this.bindTransportButtons();
   },
 
@@ -528,7 +487,7 @@ const app = {
         <label class="small" style="display:block; margin-bottom:4px;">選擇站點</label>
         <select id="stopSelect" style="width:100%; padding:8px; border-radius:8px; background:#1e1e1e; color:#fff; border:1px solid #333; font-size:14px;">
           ${stops.map((s, idx) => {
-            const sid = s.stop || s.stop_id || s.id || '';
+            const sid = s.stop || s.stop_id || s.id || s.stopId || '';
             const label = s.name_tc || s.name_en || sid;
             return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${idx + 1}. ${this.escapeHtml(label)}</option>`;
           }).join('')}
