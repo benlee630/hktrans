@@ -32,7 +32,7 @@ const providers = {
           const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || chosenStop.__rawStopId || '';
           if (!stopId) continue;
 
-          const stopName = chosenStop.name_tc || chosenStop.name_en || chosenStop.__seq || stopId;
+          const stopName = app.getStopDisplayName(chosenStop, stopId);
           const destName = this.resolveDestName(direction, routeMeta);
 
           found.push({
@@ -174,7 +174,7 @@ const providers = {
         if (!chosenStop) chosenStop = enrichedStopList[0] || null;
 
         const stopId = chosenStop?.__rawStopId || chosenStop?.stop || chosenStop?.stop_id || chosenStop?.id || chosenStop?.stopId || '';
-        const stopName = chosenStop?.name_tc || chosenStop?.name_en || chosenStop?.__seq || stopId;
+        const stopName = app.getStopDisplayName(chosenStop, stopId);
         if (!stopId) {
           if (app.config.debug) app.debug.citybus.push({ stage: 'no-stopid', route: routeNo, direction: d.key, usedUrl });
           continue;
@@ -296,7 +296,7 @@ const app = {
     this.cacheDom();
     this.bindEvents();
     this.loadPersistedState();
-    this.renderShell();
+    this.renderIdle();
   },
 
   cacheDom() {
@@ -325,8 +325,56 @@ const app = {
     return p?.routeKey ? p.routeKey(route) : `${this.state.providerKey}:${String(route || '').toUpperCase()}`;
   },
 
+  getStopDisplayName(stop, stopId) {
+    return (
+      stop?.name_tc ||
+      stop?.name_en ||
+      stop?.stop_name_tc ||
+      stop?.stop_name_en ||
+      stop?.stopNameTc ||
+      stop?.stopNameEn ||
+      stop?.__seq ||
+      stopId ||
+      ''
+    );
+  },
+
+  renderShellMessage() {
+    return this.state.transportSelected ? '輸入路線開始搜尋' : '請先揀交通工具';
+  },
+
+  renderTransportPicker() {
+    return `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <button type="button" class="transport-btn ${this.state.transportType === 'bus' ? 'active' : ''}" data-transport="bus">巴士</button>
+        <button type="button" class="transport-btn ${this.state.transportType === 'mtr' ? 'active' : ''}" data-transport="mtr">MTR</button>
+        <button type="button" class="transport-btn ${this.state.transportType === 'other' ? 'active' : ''}" data-transport="other">城巴</button>
+      </div>
+    `;
+  },
+
   renderShell() {
     this.renderIdle();
+  },
+
+  renderIdle() {
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">${this.renderShellMessage()}</span>
+      </div>
+    `;
+    this.bindTransportButtons();
+  },
+
+  renderLoading() {
+    this.dom.result.innerHTML = `
+      ${this.renderTransportPicker()}
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">搜尋中...</span>
+      </div>
+    `;
+    this.bindTransportButtons();
   },
 
   async handleSearch(q) {
@@ -397,7 +445,7 @@ const app = {
       const chosenStop = (this.state.enrichedStopList || []).find(s => (s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId) === stopId);
       if (!chosenStop) throw new Error('找不到站點');
 
-      const stopName = chosenStop.name_tc || chosenStop.name_en || chosenStop.__seq || stopId;
+      const stopName = this.getStopDisplayName(chosenStop, stopId);
       this.state.chosenStop = chosenStop;
       this.state.stopId = stopId;
       this.state.stopName = stopName;
@@ -437,6 +485,7 @@ const app = {
   async refreshEta(provider = null) {
     if (!this.state.lastResolvedQuery || this.state.isRefreshing) return;
     this.state.isRefreshing = true;
+
     try {
       const p = provider || this.getProvider();
       const { route, stopId } = this.state.lastResolvedQuery;
@@ -482,6 +531,8 @@ const app = {
     const hay = [
       stop?.name_tc || '',
       stop?.name_en || '',
+      stop?.stop_name_tc || '',
+      stop?.stop_name_en || '',
       stop?.__rawStopId || '',
       stop?.__seq || '',
       stop?.stop || '',
@@ -491,10 +542,11 @@ const app = {
   },
 
   async enrichAllStopNames(stopList) {
-    return stopList.map(s => ({
+    return stopList.map((s, idx) => ({
       ...s,
-      name_tc: s.name_tc || s.stop_name_tc || s.name || s.stopname_tc || s.stopNameTc || s.name_chi || '',
-      name_en: s.name_en || s.stop_name_en || s.stopname_en || s.stopNameEn || s.name_eng || ''
+      __seq: String(s.__seq || s.seq || s.sequence || s.stop_seq || idx + 1),
+      name_tc: s.name_tc || s.stop_name_tc || s.stopNameTc || s.name || s.name_chi || '',
+      name_en: s.name_en || s.stop_name_en || s.stopNameEn || s.name_eng || ''
     }));
   },
 
@@ -521,46 +573,6 @@ const app = {
     return JSON.parse(text);
   },
 
-  renderTransportPicker() {
-    return `
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-        <button type="button" class="transport-btn ${this.state.transportType === 'bus' ? 'active' : ''}" data-transport="bus">巴士</button>
-        <button type="button" class="transport-btn ${this.state.transportType === 'mtr' ? 'active' : ''}" data-transport="mtr">MTR</button>
-        <button type="button" class="transport-btn ${this.state.transportType === 'other' ? 'active' : ''}" data-transport="other">其他</button>
-      </div>
-    `;
-  },
-
-  renderShellMessage() {
-    return this.state.transportSelected ? '輸入路線開始搜尋' : '請先揀交通工具';
-  },
-
-  renderIdle() {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">${this.renderShellMessage()}</span>
-      </div>
-    `;
-    this.bindTransportButtons();
-  },
-
-  renderLoading() {
-    this.dom.result.innerHTML = `
-      ${this.renderTransportPicker()}
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">搜尋中...</span>
-      </div>
-    `;
-    this.bindTransportButtons();
-  },
-
-  getDirectionLabel(direction) {
-    if (direction === 'outbound' || String(direction) === '2') return '出方向';
-    if (direction === 'inbound' || String(direction) === '1') return '入方向';
-    return String(direction || '');
-  },
-
   renderDirectionButtons() {
     const dirs = (this.state.availableDirections || []).slice(0, 2);
     if (!dirs.length) return '';
@@ -585,7 +597,7 @@ const app = {
         <select id="stopSelect" style="width:100%; padding:8px; border-radius:8px; background:#1e1e1e; color:#fff; border:1px solid #333; font-size:14px;">
           ${stops.map((s, idx) => {
             const sid = s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId || '';
-            const label = s.name_tc || s.name_en || sid || s.__seq;
+            const label = this.getStopDisplayName(s, sid);
             return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${idx + 1}. ${this.escapeHtml(label)}</option>`;
           }).join('')}
         </select>
@@ -595,13 +607,12 @@ const app = {
 
   renderResult() {
     const s = this.state;
-
     this.dom.result.innerHTML = `
       ${this.renderTransportPicker()}
       <div class="row"><strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(s.destName || s.stopName || '')}</strong></div>
       <div class="row" style="margin-top:4px;"><span class="small">查詢 key：${this.escapeHtml(this.getRouteKey(s.route))}</span></div>
       <div class="row" style="margin-top:4px;"><span class="small">營辦商：${this.escapeHtml(s.brandName || '')}</span></div>
-      <div class="row" style="margin-top:4px;"><span class="small">站點：${this.escapeHtml(s.stopName || '')}</span><span class="small">${this.escapeHtml(this.getDirectionLabel(s.chosenDirection))}</span></div>
+      <div class="row" style="margin-top:4px;"><span class="small">站點：${this.escapeHtml(this.getStopDisplayName(s.chosenStop, s.stopId))}</span><span class="small">${this.escapeHtml(this.getDirectionLabel(s.chosenDirection))}</span></div>
       ${this.renderDirectionButtons()}
       ${this.renderStopDropdown()}
       <div style="height:10px"></div>
@@ -634,7 +645,6 @@ const app = {
         <span class="small">${this.config.refreshMs / 1000} 秒</span>
       </div>
     `;
-
     this.bindTransportButtons();
     this.bindDirectionButtons();
     this.bindStopDropdown();
@@ -714,6 +724,12 @@ const app = {
       this.state.history = [];
       this.state.favorites = [];
     }
+  },
+
+  getDirectionLabel(direction) {
+    if (direction === 'outbound' || String(direction) === '2') return '出方向';
+    if (direction === 'inbound' || String(direction) === '1') return '入方向';
+    return String(direction || '');
   },
 
   escapeHtml(str) {
