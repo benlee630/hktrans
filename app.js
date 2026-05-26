@@ -354,15 +354,16 @@ const app = {
     return (
       stopMeta?.data?.stop_name_tc ||
       stopMeta?.data?.name_tc ||
-      stopMeta?.data?.name ||
       stopMeta?.stop_name_tc ||
-      stopMeta?.stop_name ||
+      stopMeta?.name_tc ||
       stop?.stop_name_tc ||
       stop?.STOP_NAMEC ||
       stop?.name_tc ||
       stop?.name ||
       stopMeta?.data?.stop_name_en ||
       stopMeta?.data?.name_en ||
+      stopMeta?.stop_name_en ||
+      stopMeta?.name_en ||
       stop?.stop_name_en ||
       stop?.STOP_NAMEE ||
       stop?.name_en ||
@@ -505,7 +506,6 @@ const app = {
       let stopMeta = chosenStop.__stopMeta || {};
       if (provider?.key === 'kmb' && provider.fetchStopMeta) stopMeta = await provider.fetchStopMeta(stopId, this);
       if (provider?.key === 'ctb' && provider.fetchStopMeta) stopMeta = await provider.fetchStopMeta(stopId, this);
-
       chosenStop.__stopMeta = stopMeta;
 
       const stopName = this.getStopDisplayName(chosenStop, stopId, provider?.key || '');
@@ -621,7 +621,7 @@ const app = {
         ...s,
         __seq: String(s.__seq || s.seq || s.sequence || s.stop_seq || idx + 1),
         __stopMeta: stopMeta,
-        stop_name_tc: stopMeta?.stop_name_tc || stopMeta?.name_tc || stopMeta?.stop_name || s.stop_name_tc || s.STOP_NAMEC || s.name_tc || s.name || '',
+        stop_name_tc: stopMeta?.stop_name_tc || stopMeta?.name_tc || s.stop_name_tc || s.STOP_NAMEC || s.name_tc || s.name || '',
         stop_name_en: stopMeta?.stop_name_en || stopMeta?.name_en || s.stop_name_en || s.STOP_NAMEE || s.name_en || '',
         name_tc: stopMeta?.stop_name_tc || stopMeta?.name_tc || s.name_tc || s.STOP_NAMEC || s.name || '',
         name_en: stopMeta?.stop_name_en || stopMeta?.name_en || s.name_en || s.STOP_NAMEE || s.name || '',
@@ -698,6 +698,7 @@ const app = {
     if (!stops.length) return '';
     const currentId = this.state.stopId || '';
     const providerKey = this.state.providerKey;
+
     return `
       <div style="margin-top:10px;">
         <label class="small" style="display:block; margin-bottom:4px;">選擇站點</label>
