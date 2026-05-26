@@ -1,5 +1,4 @@
-function applyCitybusOnlyPatch(app) {
-  const CITYBUS_DEBUG = true;
+const CITYBUS_DEBUG = true;
 
   function log(obj) {
     if (!CITYBUS_DEBUG) return;
