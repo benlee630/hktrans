@@ -14,6 +14,15 @@ const providers = {
       }
     },
 
+    async fetchStopMeta(stopId, app) {
+      try {
+        const json = await app.fetchJson(`https://data.etabus.gov.hk/v1/transport/kmb/stop/${encodeURIComponent(stopId)}`);
+        return json?.data || json || {};
+      } catch (_) {
+        return {};
+      }
+    },
+
     async resolveAllDirections(route, stopText, routeMeta, app) {
       const found = [];
       for (const direction of ['outbound', 'inbound']) {
@@ -23,16 +32,18 @@ const providers = {
           const stopList = app.normalizeList(json);
           if (!stopList.length) continue;
 
-          const enrichedStopList = await app.enrichAllStopNames(stopList);
+          const enrichedStopList = await app.enrichKmbStops(stopList, app);
           let chosenStop = null;
+
           if (stopText) chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopText)) || null;
           if (!chosenStop) chosenStop = enrichedStopList[0];
           if (!chosenStop) continue;
 
-          const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || chosenStop.__rawStopId || '';
+          const stopId = app.getRawStopId(chosenStop);
           if (!stopId) continue;
 
-          const stopName = app.getStopDisplayName(chosenStop, stopId, 'kmb');
+          const stopMeta = await this.fetchStopMeta(stopId, app);
+          const stopName = app.getKmbStopName(chosenStop, stopMeta, stopId);
           const destName = this.resolveDestName(direction, routeMeta);
 
           found.push({
@@ -40,6 +51,7 @@ const providers = {
             stopList,
             enrichedStopList,
             chosenStop,
+            stopMeta,
             stopId,
             stopName,
             destName
@@ -108,6 +120,15 @@ const providers = {
       return {};
     },
 
+    async fetchStopMeta(stopId, app) {
+      try {
+        const json = await app.fetchJson(`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(stopId)}`);
+        return json?.data || json || {};
+      } catch (_) {
+        return {};
+      }
+    },
+
     async resolveAllDirections(route, stopText, routeMeta, app) {
       const routeNo = String(route || '').trim().toUpperCase();
       const routeData = routeMeta?.data || routeMeta || {};
@@ -147,45 +168,36 @@ const providers = {
           continue;
         }
 
-        const enrichedStopList = stopList.map((s, idx) => {
-          const rawStopId = s.stop || s.stop_id || s.id || s.stopId || s.stopID || s.bus_stop_id || s.busStopId || '';
-          const seq = s.seq || s.sequence || s.stop_seq || s.bus_stop_seq || idx + 1;
-          const nameTc = s.name_tc || s.stop_name_tc || s.stopNameTc || s.STOP_NAMEC || s.name || s.name_chi || '';
-          const nameEn = s.name_en || s.stop_name_en || s.stopNameEn || s.STOP_NAMEE || s.name_eng || '';
-          return {
-            ...s,
-            __rawStopId: rawStopId,
-            __seq: String(seq),
-            stop_name_tc: nameTc,
-            stop_name_en: nameEn,
-            name_tc: nameTc,
-            name_en: nameEn
-          };
-        });
+        const enrichedStopList = await app.enrichCitybusStops(stopList, app);
 
         let chosenStop = null;
         const stopTextNorm = String(stopText || '').trim().toUpperCase();
         if (stopTextNorm) {
-          chosenStop = enrichedStopList.find(s => {
-            const hay = [
-              s.stop_name_tc, s.stop_name_en, s.name_tc, s.name_en,
-              s.__rawStopId, s.__seq, s.stop, s.stop_id, s.id
-            ].filter(Boolean).join(' ').toUpperCase();
-            return hay.includes(stopTextNorm);
-          }) || null;
+          chosenStop = enrichedStopList.find(s => app.matchesStopText(s, stopTextNorm)) || null;
         }
-
         if (!chosenStop) chosenStop = enrichedStopList[0] || null;
 
-        const stopId = chosenStop?.__rawStopId || chosenStop?.stop || chosenStop?.stop_id || chosenStop?.id || chosenStop?.stopId || '';
+        const stopId = app.getRawStopId(chosenStop);
         if (!stopId) {
           if (app.config.debug) app.debug.citybus.push({ stage: 'no-stopid', route: routeNo, direction: d.key, usedUrl });
           continue;
         }
 
-        const stopName = app.getStopDisplayName(chosenStop, stopId, 'ctb');
+        const stopMeta = await this.fetchStopMeta(stopId, app);
+        const stopName = app.getCitybusStopName(chosenStop, stopMeta, stopId);
         const destName = this.resolveDestName(d.key, routeData);
-        found.push({ chosenDirection: d.key, stopList, enrichedStopList, chosenStop, stopId, stopName, destName, usedUrl });
+
+        found.push({
+          chosenDirection: d.key,
+          stopList,
+          enrichedStopList,
+          chosenStop,
+          stopMeta,
+          stopId,
+          stopName,
+          destName,
+          usedUrl
+        });
 
         if (app.config.debug) app.debug.citybus.push({ stage: 'route-stop-ok', route: routeNo, direction: d.key, usedUrl, stopId, stopName, count: stopList.length });
       }
@@ -330,39 +342,61 @@ const app = {
     return p?.routeKey ? p.routeKey(route) : `${this.state.providerKey}:${String(route || '').toUpperCase()}`;
   },
 
-  getStopDisplayName(stop, stopId, providerKey = '') {
-    const isCitybus = providerKey === 'ctb';
+  getRawStopId(stop) {
+    return stop?.__rawStopId || stop?.stop || stop?.stop_id || stop?.id || stop?.stopId || stop?.stopID || '';
+  },
 
-    if (isCitybus) {
-      return (
-        stop?.stop_name_tc ||
-        stop?.name_tc ||
-        stop?.STOP_NAMEC ||
-        stop?.stop_name ||
-        stop?.name ||
-        stop?.stop_name_en ||
-        stop?.name_en ||
-        stop?.STOP_NAMEE ||
-        stop?.__seq ||
-        stopId ||
-        ''
-      );
-    }
+  normalizeText(v) {
+    return String(v || '').trim().toUpperCase();
+  },
 
+  getKmbStopName(stop, stopMeta, stopId) {
     return (
+      stopMeta?.data?.stop_name_tc ||
+      stopMeta?.data?.name_tc ||
+      stopMeta?.data?.name ||
+      stopMeta?.stop_name_tc ||
+      stopMeta?.stop_name ||
       stop?.stop_name_tc ||
       stop?.STOP_NAMEC ||
       stop?.name_tc ||
-      stop?.stopNameTc ||
+      stop?.name ||
+      stopMeta?.data?.stop_name_en ||
+      stopMeta?.data?.name_en ||
       stop?.stop_name_en ||
       stop?.STOP_NAMEE ||
       stop?.name_en ||
-      stop?.stopNameEn ||
-      stop?.name ||
-      stop?.__seq ||
       stopId ||
       ''
     );
+  },
+
+  getCitybusStopName(stop, stopMeta, stopId) {
+    return (
+      stopMeta?.name_tc ||
+      stopMeta?.stop_name_tc ||
+      stopMeta?.data?.name_tc ||
+      stopMeta?.data?.stop_name_tc ||
+      stop?.stop_name_tc ||
+      stop?.name_tc ||
+      stop?.STOP_NAMEC ||
+      stop?.name ||
+      stopMeta?.name_en ||
+      stopMeta?.stop_name_en ||
+      stopMeta?.data?.name_en ||
+      stopMeta?.data?.stop_name_en ||
+      stop?.stop_name_en ||
+      stop?.name_en ||
+      stop?.STOP_NAMEE ||
+      stopId ||
+      ''
+    );
+  },
+
+  getStopDisplayName(stop, stopId, providerKey = '') {
+    const isCitybus = providerKey === 'ctb';
+    if (isCitybus) return this.getCitybusStopName(stop, stop?.__stopMeta || {}, stopId);
+    return this.getKmbStopName(stop, stop?.__stopMeta || {}, stopId);
   },
 
   renderTransportPicker() {
@@ -464,11 +498,17 @@ const app = {
       this.stopAutoRefresh();
       this.renderLoading();
 
-      const providerKey = this.state.providerKey;
-      const chosenStop = (this.state.enrichedStopList || []).find(s => (s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId) === stopId);
+      const provider = this.getProvider();
+      const chosenStop = (this.state.enrichedStopList || []).find(s => this.getRawStopId(s) === stopId);
       if (!chosenStop) throw new Error('找不到站點');
 
-      const stopName = this.getStopDisplayName(chosenStop, stopId, providerKey);
+      let stopMeta = chosenStop.__stopMeta || {};
+      if (provider?.key === 'kmb' && provider.fetchStopMeta) stopMeta = await provider.fetchStopMeta(stopId, this);
+      if (provider?.key === 'ctb' && provider.fetchStopMeta) stopMeta = await provider.fetchStopMeta(stopId, this);
+
+      chosenStop.__stopMeta = stopMeta;
+
+      const stopName = this.getStopDisplayName(chosenStop, stopId, provider?.key || '');
       this.state.chosenStop = chosenStop;
       this.state.stopId = stopId;
       this.state.stopName = stopName;
@@ -563,18 +603,57 @@ const app = {
       stop?.stop || '',
       stop?.stopId || ''
     ].join(' ').toUpperCase();
-    return hay.includes(String(text || '').toUpperCase());
+    return hay.includes(this.normalizeText(text));
   },
 
-  async enrichAllStopNames(stopList) {
-    return stopList.map((s, idx) => ({
-      ...s,
-      __seq: String(s.__seq || s.seq || s.sequence || s.stop_seq || idx + 1),
-      stop_name_tc: s.stop_name_tc || s.STOP_NAMEC || s.name_tc || s.name || s.stopNameTc || '',
-      stop_name_en: s.stop_name_en || s.STOP_NAMEE || s.name_en || s.stopNameEn || '',
-      name_tc: s.name_tc || s.stop_name_tc || s.STOP_NAMEC || s.name || '',
-      name_en: s.name_en || s.stop_name_en || s.STOP_NAMEE || s.name || ''
+  async enrichKmbStops(stopList, app) {
+    const list = await Promise.all(stopList.map(async (s, idx) => {
+      const stopId = app.getRawStopId(s);
+      let stopMeta = {};
+      if (stopId) {
+        try {
+          const json = await app.fetchJson(`https://data.etabus.gov.hk/v1/transport/kmb/stop/${encodeURIComponent(stopId)}`);
+          stopMeta = json?.data || json || {};
+        } catch (_) {}
+      }
+      const stopName = app.getKmbStopName(s, stopMeta, stopId);
+      return {
+        ...s,
+        __seq: String(s.__seq || s.seq || s.sequence || s.stop_seq || idx + 1),
+        __stopMeta: stopMeta,
+        stop_name_tc: stopMeta?.stop_name_tc || stopMeta?.name_tc || stopMeta?.stop_name || s.stop_name_tc || s.STOP_NAMEC || s.name_tc || s.name || '',
+        stop_name_en: stopMeta?.stop_name_en || stopMeta?.name_en || s.stop_name_en || s.STOP_NAMEE || s.name_en || '',
+        name_tc: stopMeta?.stop_name_tc || stopMeta?.name_tc || s.name_tc || s.STOP_NAMEC || s.name || '',
+        name_en: stopMeta?.stop_name_en || stopMeta?.name_en || s.name_en || s.STOP_NAMEE || s.name || '',
+        display_name: stopName
+      };
     }));
+    return list;
+  },
+
+  async enrichCitybusStops(stopList, app) {
+    const list = await Promise.all(stopList.map(async (s, idx) => {
+      const stopId = app.getRawStopId(s);
+      let stopMeta = {};
+      if (stopId) {
+        try {
+          const json = await app.fetchJson(`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(stopId)}`);
+          stopMeta = json?.data || json || {};
+        } catch (_) {}
+      }
+      const stopName = app.getCitybusStopName(s, stopMeta, stopId);
+      return {
+        ...s,
+        __seq: String(s.__seq || s.seq || s.sequence || s.stop_seq || idx + 1),
+        __stopMeta: stopMeta,
+        stop_name_tc: stopMeta?.name_tc || stopMeta?.stop_name_tc || s.stop_name_tc || s.name_tc || s.STOP_NAMEC || '',
+        stop_name_en: stopMeta?.name_en || stopMeta?.stop_name_en || s.stop_name_en || s.name_en || s.STOP_NAMEE || '',
+        name_tc: stopMeta?.name_tc || stopMeta?.stop_name_tc || s.name_tc || s.STOP_NAMEC || '',
+        name_en: stopMeta?.name_en || stopMeta?.stop_name_en || s.name_en || s.STOP_NAMEE || '',
+        display_name: stopName
+      };
+    }));
+    return list;
   },
 
   etaStatus(x) {
@@ -623,9 +702,9 @@ const app = {
       <div style="margin-top:10px;">
         <label class="small" style="display:block; margin-bottom:4px;">選擇站點</label>
         <select id="stopSelect" style="width:100%; padding:8px; border-radius:8px; background:#1e1e1e; color:#fff; border:1px solid #333; font-size:14px;">
-          ${stops.map((s, idx) => {
-            const sid = s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId || '';
-            const label = this.getStopDisplayName(s, sid, providerKey);
+          ${stops.map(s => {
+            const sid = this.getRawStopId(s);
+            const label = s.display_name || this.getStopDisplayName(s, sid, providerKey);
             return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${this.escapeHtml(label)}</option>`;
           }).join('')}
         </select>
