@@ -32,7 +32,7 @@ const providers = {
           const stopId = chosenStop.stop || chosenStop.stop_id || chosenStop.id || chosenStop.__rawStopId || '';
           if (!stopId) continue;
 
-          const stopName = app.getStopDisplayName(chosenStop, stopId);
+          const stopName = app.getStopDisplayName(chosenStop, stopId, 'kmb');
           const destName = this.resolveDestName(direction, routeMeta);
 
           found.push({
@@ -178,14 +178,15 @@ const providers = {
         if (!chosenStop) chosenStop = enrichedStopList[0] || null;
 
         const stopId = chosenStop?.__rawStopId || chosenStop?.stop || chosenStop?.stop_id || chosenStop?.id || chosenStop?.stopId || '';
-        const stopName = app.getStopDisplayName(chosenStop, stopId);
         if (!stopId) {
           if (app.config.debug) app.debug.citybus.push({ stage: 'no-stopid', route: routeNo, direction: d.key, usedUrl });
           continue;
         }
 
+        const stopName = app.getStopDisplayName(chosenStop, stopId, 'ctb');
         const destName = this.resolveDestName(d.key, routeData);
         found.push({ chosenDirection: d.key, stopList, enrichedStopList, chosenStop, stopId, stopName, destName, usedUrl });
+
         if (app.config.debug) app.debug.citybus.push({ stage: 'route-stop-ok', route: routeNo, direction: d.key, usedUrl, stopId, stopName, count: stopList.length });
       }
 
@@ -195,7 +196,7 @@ const providers = {
     resolveDestName(direction, routeMeta) {
       const d = String(direction || '').toLowerCase();
       const isOut = d === 'outbound' || d === 'o' || d === '2';
-      return isOut ? (routeMeta?.dest_en || routeMeta?.dest_tc || routeMeta?.dest || '') : (routeMeta?.orig_en || routeMeta?.orig_tc || routeMeta?.orig || '');
+      return isOut ? (routeMeta?.dest_tc || routeMeta?.dest_en || routeMeta?.dest || '') : (routeMeta?.orig_tc || routeMeta?.orig_en || routeMeta?.orig || '');
     },
 
     async fetchEta(route, stopId, app) {
@@ -329,15 +330,33 @@ const app = {
     return p?.routeKey ? p.routeKey(route) : `${this.state.providerKey}:${String(route || '').toUpperCase()}`;
   },
 
-  getStopDisplayName(stop, stopId) {
+  getStopDisplayName(stop, stopId, providerKey = '') {
+    const isCitybus = providerKey === 'ctb';
+
+    if (isCitybus) {
+      return (
+        stop?.stop_name_tc ||
+        stop?.name_tc ||
+        stop?.STOP_NAMEC ||
+        stop?.stop_name ||
+        stop?.name ||
+        stop?.stop_name_en ||
+        stop?.name_en ||
+        stop?.STOP_NAMEE ||
+        stop?.__seq ||
+        stopId ||
+        ''
+      );
+    }
+
     return (
       stop?.stop_name_tc ||
-      stop?.stop_name_en ||
       stop?.STOP_NAMEC ||
-      stop?.STOP_NAMEE ||
       stop?.name_tc ||
-      stop?.name_en ||
       stop?.stopNameTc ||
+      stop?.stop_name_en ||
+      stop?.STOP_NAMEE ||
+      stop?.name_en ||
       stop?.stopNameEn ||
       stop?.name ||
       stop?.__seq ||
@@ -445,10 +464,11 @@ const app = {
       this.stopAutoRefresh();
       this.renderLoading();
 
+      const providerKey = this.state.providerKey;
       const chosenStop = (this.state.enrichedStopList || []).find(s => (s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId) === stopId);
       if (!chosenStop) throw new Error('找不到站點');
 
-      const stopName = this.getStopDisplayName(chosenStop, stopId);
+      const stopName = this.getStopDisplayName(chosenStop, stopId, providerKey);
       this.state.chosenStop = chosenStop;
       this.state.stopId = stopId;
       this.state.stopName = stopName;
@@ -532,11 +552,12 @@ const app = {
   matchesStopText(stop, text) {
     const hay = [
       stop?.stop_name_tc || '',
-      stop?.stop_name_en || '',
-      stop?.name_tc || '',
-      stop?.name_en || '',
       stop?.STOP_NAMEC || '',
+      stop?.name_tc || '',
+      stop?.name || '',
+      stop?.stop_name_en || '',
       stop?.STOP_NAMEE || '',
+      stop?.name_en || '',
       stop?.__rawStopId || '',
       stop?.__seq || '',
       stop?.stop || '',
@@ -597,14 +618,15 @@ const app = {
     const stops = this.state.enrichedStopList || [];
     if (!stops.length) return '';
     const currentId = this.state.stopId || '';
+    const providerKey = this.state.providerKey;
     return `
       <div style="margin-top:10px;">
         <label class="small" style="display:block; margin-bottom:4px;">選擇站點</label>
         <select id="stopSelect" style="width:100%; padding:8px; border-radius:8px; background:#1e1e1e; color:#fff; border:1px solid #333; font-size:14px;">
           ${stops.map((s, idx) => {
             const sid = s.__rawStopId || s.stop || s.stop_id || s.id || s.stopId || '';
-            const label = this.getStopDisplayName(s, sid);
-            return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${idx + 1}. ${this.escapeHtml(label)}</option>`;
+            const label = this.getStopDisplayName(s, sid, providerKey);
+            return `<option value="${this.escapeHtml(sid)}" ${sid === currentId ? 'selected' : ''}>${this.escapeHtml(label)}</option>`;
           }).join('')}
         </select>
       </div>
@@ -613,12 +635,14 @@ const app = {
 
   renderResult() {
     const s = this.state;
+    const providerKey = this.state.providerKey;
+
     this.dom.result.innerHTML = `
       ${this.renderTransportPicker()}
       <div class="row"><strong>${this.escapeHtml(s.route)}｜${this.escapeHtml(s.destName || s.stopName || '')}</strong></div>
       <div class="row" style="margin-top:4px;"><span class="small">查詢 key：${this.escapeHtml(this.getRouteKey(s.route))}</span></div>
       <div class="row" style="margin-top:4px;"><span class="small">營辦商：${this.escapeHtml(s.brandName || '')}</span></div>
-      <div class="row" style="margin-top:4px;"><span class="small">站點：${this.escapeHtml(this.getStopDisplayName(s.chosenStop, s.stopId))}</span><span class="small">${this.escapeHtml(this.getDirectionLabel(s.chosenDirection))}</span></div>
+      <div class="row" style="margin-top:4px;"><span class="small">站點：${this.escapeHtml(this.getStopDisplayName(s.chosenStop, s.stopId, providerKey))}</span><span class="small">${this.escapeHtml(this.getDirectionLabel(s.chosenDirection))}</span></div>
       ${this.renderDirectionButtons()}
       ${this.renderStopDropdown()}
       <div style="height:10px"></div>
